@@ -72,6 +72,6 @@ Updated: 2026-08-30
 
 This file is maintained throughout implementation so format discoveries, derived defaults, validation rules, and verification results remain auditable.
 
-## Pending verification
+## Release verification
 
-- [ ] Publish and verify the tagged v0.2.0 desktop-editor GitHub Release after the final commit.
+- [x] Published and verified the tagged v0.2.0 desktop-editor GitHub Release with the self-contained Windows archive and SHA-256 checksum.

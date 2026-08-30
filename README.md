@@ -20,6 +20,8 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 - Repository dropdown/load/save/publish controls backed by a loopback-only local service in browser mode and a native bridge in the desktop app.
 - A self-contained Windows x64 Edge WebView2 app with per-monitor DPI handling, responsive high-DPI controls, and embedded editor/assets. See [the desktop release guide](docs/DESKTOP_RELEASE.md).
 
+Download [Wulfram Forge v0.2.0](https://github.com/blackwatergaming/wulfram-mapeditor/releases/tag/v0.2.0), extract the ZIP, and run `WulframForge/WulframForge.exe`. Node.js and a local web server are not required for the desktop build.
+
 The built-in Crossroads sample is read directly from the shipped map data. Gun and flak placement defaults come from robust statistics over 390 shipped turret records. The original client’s placement routines and checkerboard triangle interpolation were checked in Ghidra: rotations are radians, median gun/flak ground offsets are 16.420/15.847 world units, and power thresholds use `backupRadius - 10`, `2 × serviceRadius + 10`, and `serviceRadius - 10`. Power radii are server-supplied at runtime, so the editor exposes and stores them rather than pretending they are executable constants.
 
 ## Run locally
