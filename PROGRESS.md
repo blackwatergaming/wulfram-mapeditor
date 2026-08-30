@@ -44,10 +44,7 @@ Updated: 2026-08-30
 - [x] Remove cargo variants for model-less deployables from new placement and templates while retaining legacy-row import/export.
 - [x] Complete headed WebView2 verification of repository setup, placement preview, Shift-drag, Escape, grayscale controls, texture decoding, DPI layout, and camera performance.
 - [x] Clear the previous repository slug when creating or importing a different map so Save cannot overwrite the formerly selected map.
-
-## In progress
-
-- [ ] Publish and verify the tagged v0.3.0 self-contained desktop release.
+- [x] Publish and verify the tagged v0.3.0 self-contained desktop release.
 
 ## Findings
 
@@ -84,7 +81,7 @@ Updated: 2026-08-30
 - The native repository bridge exposed 47 maps (plus the new-map option) and loaded `aberdour` from canonical Git source into the packaged desktop editor.
 - Repository workflow tests now create real temporary Git checkouts and bare remotes, then verify feature-branch naming, selected-map-only commits, pushes, PR metadata targeting `main`, branch switching, unrelated-change refusal, and the loopback health/diagnostics/catalog/branch endpoints.
 - `npm run maps:doctor` passes against the actual sibling checkout for Git, GitHub CLI authentication, the `blackwatergaming/wulfram-maps` origin, and `main`; being on `main` is intentionally reported as a warning because Publish creates a feature branch automatically.
-- The local v0.3.0 self-contained archive is 66,745,181 bytes with SHA-256 `1098545b3677464b5bb70fad474a46cd3c29d771f2c6d937270429f8affe736b`.
+- The published v0.3.0 self-contained archive is 66,742,045 bytes with SHA-256 `cc5d9899e3c88da916dd0ff33b54f59a7cae30699ac3b09b3c78a22f2732aa12`.
 
 ## Notes
 
@@ -93,3 +90,4 @@ This file is maintained throughout implementation so format discoveries, derived
 ## Release verification
 
 - [x] Published and verified the tagged v0.2.0 desktop-editor GitHub Release with the self-contained Windows archive and SHA-256 checksum.
+- [x] Published and verified the tagged v0.3.0 desktop-editor GitHub Release; its CI reran lint, all 28 regression tests, the self-contained build, artifact upload, and checksum publication successfully.
