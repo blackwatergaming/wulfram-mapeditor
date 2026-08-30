@@ -49,10 +49,7 @@ Updated: 2026-08-30
 - [x] Add exact-height stamping, exact hard-edge flattening, a Flat pad preset, target-height sampling/nudging, and working 1–6 tool shortcuts.
 - [x] Add isolated WebView2 research profiles so headed debugging can run alongside an installed editor without sharing its data directory.
 - [x] Verify the packaged v0.4.0 brush UI and exact Square/Hard height stamp at 200% Windows scaling.
-
-## In progress
-
-- [ ] Publish and verify the tagged v0.4.0 self-contained desktop release.
+- [x] Publish and verify the tagged v0.4.0 self-contained desktop release.
 
 ## Findings
 
@@ -92,6 +89,7 @@ Updated: 2026-08-30
 - The published v0.3.0 self-contained archive is 66,742,045 bytes with SHA-256 `cc5d9899e3c88da916dd0ff33b54f59a7cae30699ac3b09b3c78a22f2732aa12`.
 - Brush unit tests prove footprint boundaries and falloff curves, including a 100%-strength Hard Square stamp that makes every covered terrain vertex exactly equal to its target height.
 - The headed v0.4.0 probe stamped a blank map at height 42: all 64 affected vertices were exactly 42, the square/hard controls fit at DPR 2 with no document overflow, texture decoding succeeded, no runtime/network errors occurred, and active camera timing remained 60 FPS.
+- The published v0.4.0 self-contained archive is 66,743,591 bytes with SHA-256 `9021a26e941dcaa72991de311c35e51ae2ad0cc201002c177b08a9f30c3dec21`.
 
 ## Notes
 
@@ -101,3 +99,4 @@ This file is maintained throughout implementation so format discoveries, derived
 
 - [x] Published and verified the tagged v0.2.0 desktop-editor GitHub Release with the self-contained Windows archive and SHA-256 checksum.
 - [x] Published and verified the tagged v0.3.0 desktop-editor GitHub Release; its CI reran lint, all 28 regression tests, the self-contained build, artifact upload, and checksum publication successfully.
+- [x] Published and verified the tagged v0.4.0 desktop-editor GitHub Release; its CI reran lint, all 31 regression tests, the self-contained build, artifact upload, and checksum publication successfully.
