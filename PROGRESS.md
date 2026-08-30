@@ -37,7 +37,7 @@ Updated: 2026-08-30
 - The full regression suite round-trips all 47 discovered original maps (782,127 terrain vertices) and 44 state files (1,615 entities), then packages, reloads, and compares all 47 ZIPs. It also verifies deterministic ZIP output and falls back to the checked-in Crossroads fixture outside the source workspace.
 - Powered connected-component analysis found 73 reusable bases across 19 shipped maps, containing 832 original units. Nearby cargo, uplinks, and supply ships attach only to their nearest base, avoiding duplication.
 - Template tests match all 832 units back to their source state rows and source terrain heights, then verify team remapping, rotation, footprint auto-fit, bounds clamping, and destination-terrain conformance.
-- Terrain material rendering now keeps original categorical texture IDs on disk while producing normalized, adjustable transitions in the viewport; the paint brush uses deterministic feathering so repeated strokes remain stable.
+- Terrain material rendering now keeps original categorical texture IDs on disk while producing normalized, adjustable transitions in the viewport; the paint brush uses deterministic feathering so repeated strokes remain stable. Texture texels use strict nearest-neighbor sampling with smoothing and mipmaps disabled, preserving the source pixels.
 - Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
 - The editor is committed and pushed to the `main` branch of `blackwatergaming/wulfram-mapeditor`.

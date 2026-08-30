@@ -154,7 +154,7 @@ async function paintTerrainCanvas(
   const tile = Math.max(2, Math.min(7, Math.floor(896 / Math.max(terrain.width, terrain.height))));
   canvas.width = terrain.width * tile;
   canvas.height = terrain.height * tile;
-  context.imageSmoothingEnabled = true;
+  context.imageSmoothingEnabled = false;
 
   const names = terrain.tagmap2.map((line) => resolveTextureName(line, manifest.terrainTextures));
   for (let y = 0; y < terrain.height; y += 1) {
@@ -427,8 +427,9 @@ export function TerrainViewport({
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = false;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
     const material = new THREE.MeshStandardMaterial({ map: texture, color: 0xffffff, roughness: 0.96, metalness: 0 });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
