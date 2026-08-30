@@ -175,16 +175,28 @@
 .stage-toolbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #2a2e32; background: #141719; padding: 0 9px; }
 .history-controls,
 .stage-stats { display: flex; align-items: center; gap: 4px; }
+.history-controls { flex: 0 1 auto; white-space: nowrap; }
 .history-controls > svg { width: 14px; color: #e98a45; }
 .history-controls > span:last-child { margin-left: 3px; color: #c1bfba; font-size: 10px; }
 .toolbar-rule { width: 1px; height: 18px; margin: 0 6px; background: #34393d; }
+.repository-controls { display: flex; min-width: 0; align-items: center; gap: 3px; margin: 0 8px; padding: 3px; border: 1px solid #31373b; border-radius: 4px; background: #0d1012; }
+.repository-controls > svg { width: 13px; margin: 0 3px; color: #6b747a; }
+.repository-controls.online > svg { color: #60b886; }
+.repository-controls select { width: clamp(110px, 14vw, 190px); height: 25px; padding: 0 22px 0 6px; border: 0; border-right: 1px solid #30363a; outline: 0; color: #c7c9c9; background: #131719; font: 8px var(--font-geist-mono), monospace; text-overflow: ellipsis; }
+.repository-controls select:disabled { color: #737b80; }
+.repository-controls option { color: #d8d7d3; background: #15191b; }
+.repository-controls button { display: flex; height: 25px; align-items: center; justify-content: center; gap: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 3px; color: #969da2; font-size: 8px; }
+.repository-controls button:hover:not(:disabled) { border-color: #60442f; color: #eea16b; background: #282019; }
+.repository-controls button:disabled { opacity: 0.35; }
+.repository-controls button svg { width: 11px; }
 .stage-stats { gap: 12px; color: #687077; font: 8px var(--font-geist-mono), monospace; }
 .stage-stats .grid-active { color: #f1a166; background: #2a2019; }
 .terrain-viewport { position: relative; min-height: 0; overflow: hidden; background: radial-gradient(circle at 50% 0, #322318, #090b0c 55%); }
 .terrain-viewport canvas { display: block; width: 100%; height: 100%; outline: none; }
 .viewport-badges { position: absolute; z-index: 2; top: 12px; left: 12px; display: flex; gap: 6px; pointer-events: none; }
 .viewport-badges span { padding: 4px 7px; border: 1px solid #ffffff17; border-radius: 3px; color: #b1b5b7; background: #0c0e10b8; backdrop-filter: blur(7px); font: 8px var(--font-geist-mono), monospace; }
-.viewport-badges span:last-child { border-color: #a86a3c55; color: #e6a06d; background: #2a1d15b8; }
+.viewport-badges span:nth-child(2) { border-color: #a86a3c55; color: #e6a06d; background: #2a1d15b8; }
+.viewport-badges .placement-preview-badge { border-color: #4d9e7466; color: #80d6a7; background: #14271dbf; }
 .viewport-help { position: absolute; z-index: 2; right: 12px; bottom: 12px; display: grid; gap: 3px; padding: 6px 8px; border: 1px solid #ffffff12; border-radius: 3px; color: #7c848a; background: #080a0bd9; pointer-events: none; font: 8px var(--font-geist-mono), monospace; }
 .viewport-help span:last-child { color: #aaa49d; }
 .statusbar { display: flex; align-items: center; gap: 16px; padding: 0 10px; border-top: 1px solid #292d31; color: #858c92; background: #141719; font-size: 8px; }
@@ -280,11 +292,16 @@
 .loading-bar span { display: block; width: 45%; height: 100%; background: #e98a45; animation: load-slide 1.2s infinite ease-in-out; }
 @keyframes load-slide { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
 
-@media (max-width: 1120px) {
+@media (max-width: 1320px) {
   .workspace { grid-template-columns: 218px minmax(380px, 1fr) 260px; }
   .topbar { grid-template-columns: 218px minmax(150px, 1fr) auto; }
   .source-badge,
-  .top-actions button:nth-child(3),
-  .top-actions button:nth-child(4),
+  .history-controls > span:last-child,
+  .repository-controls button span,
   .stage-stats span:nth-child(2) { display: none; }
+  .top-actions button { width: 32px; padding-inline: 0; overflow: hidden; font-size: 0; }
+  .top-actions .export-button { width: 36px; padding-inline: 0; }
+  .repository-controls { margin-inline: 4px; }
+  .repository-controls select { width: clamp(100px, 17vw, 160px); }
+  .repository-controls button { width: 25px; padding: 0; }
 }

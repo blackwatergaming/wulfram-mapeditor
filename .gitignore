@@ -37,3 +37,8 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/.dotnet-sdk/
+/desktop/WulframForge/bin/
+/desktop/WulframForge/obj/
+/desktop/WulframForge/wwwroot/
+/desktop/WulframForge/WebAssets.zip

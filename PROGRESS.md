@@ -25,6 +25,15 @@ Updated: 2026-08-30
 - [x] Add Neutral team placement for capturable bases and filter new placements against the extracted model manifest.
 - [x] Add footprint-wide slope snapping and anti-clipping clearance for repair pads, power cells, missile launchers, and skypumps.
 - [x] Commit and push the completed editor to `blackwatergaming/wulfram-mapeditor`.
+- [x] Add the canonical Git-friendly map source format and validate conversion/recompilation across all 47 original maps.
+- [x] Add browser loopback and desktop-native repository dropdown/load/save/publish workflows for `blackwatergaming/wulfram-maps`.
+- [x] Seed and push all 47 canonical map sources, then publish 49 deterministic artifacts in the `wulfram-maps` v0.1.0 GitHub Release.
+- [x] Build the self-contained Windows x64 Edge WebView2 desktop application and automated release workflow.
+- [x] Add per-monitor-v2 DPI handling, compact high-DPI controls, fixed 100% WebView zoom, and headed layout/performance measurement.
+- [x] Fix the terrain canvas upload so packaged WebView2 builds render original texture pixels instead of the average-color fallback.
+- [x] Add live terrain-conformed original-model ghosts for single-unit and whole-template placement.
+- [x] Remove the artificial camera close-zoom distance floor.
+- [x] Remove the ChatGPT Sites hosting manifest/plugin so builds and publication remain local or GitHub-based.
 
 ## Findings
 
@@ -51,6 +60,13 @@ Updated: 2026-08-30
 - Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
 - The editor is committed and pushed to the `main` branch of `blackwatergaming/wulfram-mapeditor`.
+- The canonical source suite converts, reloads, and recompiles all 47 original maps; source ZIPs and compiled packages are deterministic for an unchanged revision.
+- `blackwatergaming/wulfram-maps` now contains 47 canonical map directories on `main`; release v0.1.0 contains 47 map packages, one collection archive, and `SHA256SUMS.txt`.
+- The loopback service returned all 47 maps and loaded Crossroads with 16,641 terrain vertices and 69 entities; the editor route returned HTTP 200.
+- A headed Edge WebView2 run at Windows 200% scaling reported a 1280×730 CSS viewport at DPR 2 with no document overflow. Idle, nine-model template-preview, and active keyboard-camera timing held 59–60 FPS.
+- WebView2 texture requests and canvas pixel reads succeeded. Pre-sizing the 903×903 terrain atlas before its first GPU upload removed `glCopySubTextureCHROMIUM` overflow warnings and restored the original blended texture view.
+- The desktop template placement probe selected a nine-unit shipped base, rendered its live preview badge and translucent terrain-conformed models, and completed without console or network errors.
+- The native repository bridge exposed 47 maps (plus the new-map option) and loaded `aberdour` from canonical Git source into the packaged desktop editor.
 
 ## Notes
 
@@ -58,4 +74,4 @@ This file is maintained throughout implementation so format discoveries, derived
 
 ## Pending verification
 
-- [ ] Measure interactive frame timing in a headed remote-control browser. No Chrome or Firefox backend is currently connected to this session through Computer use.
+- [ ] Publish and verify the tagged v0.2.0 desktop-editor GitHub Release after the final commit.

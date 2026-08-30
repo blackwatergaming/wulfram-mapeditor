@@ -271,12 +271,14 @@ export function serializeLand(terrain: TerrainData): string {
 
 export function parseState(text: string): StateEntity[] {
   const entities: StateEntity[] = [];
+  let sourceRow = 0;
   for (const rawLine of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
+    sourceRow += 1;
     const parts = line.split(/\s+/);
     if (parts[0] === '*') {
-      entities.push({ id: createId('decoration'), token: '*', team: 0, position: [0, 0, 0], rotation: [0, 0, 0], active: 1, raw: line });
+      entities.push({ id: `decoration-${sourceRow}`, token: '*', team: 0, position: [0, 0, 0], rotation: [0, 0, 0], active: 1, raw: line });
       continue;
     }
     const cargo = parts[0] === 'c';
@@ -285,7 +287,7 @@ export function parseState(text: string): StateEntity[] {
     const values = numeric.map(Number);
     if (values.some((value) => !Number.isFinite(value))) continue;
     entities.push({
-      id: createId(parts[0]),
+      id: `${parts[0]}-${sourceRow}`,
       token: parts[0],
       subtype: cargo ? parts[1] : undefined,
       team: Math.trunc(values[0]),

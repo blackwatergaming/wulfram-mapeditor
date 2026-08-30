@@ -14,6 +14,7 @@ import {
   toBaseLayout,
   validateProject,
 } from '../lib/wulfram.ts';
+import { createMapSourceFiles, parseMapSourceFiles } from '../lib/map-source.ts';
 
 const workspace = process.cwd();
 const demo = path.join(workspace, 'public', 'assets', 'demo', 'crossroads');
@@ -53,6 +54,9 @@ const project = {
   validation: { serviceRadius: 300, backupRadius: 80, maxSlopeDegrees: 22, minSpacing: 8 },
   updatedAt: new Date(0).toISOString(),
 };
+const sourceProject = parseMapSourceFiles(createMapSourceFiles(project));
+assert.deepEqual(sourceProject.terrain, project.terrain);
+assert.equal(serializeState(sourceProject.entities), serializeState(project.entities));
 const layout = toBaseLayout(project);
 const parsedLayout = parseBaseLayout(JSON.parse(JSON.stringify(layout)));
 assert.equal(parsedLayout.entities.length, entities.filter((entity) => entity.token !== '*').length);
@@ -81,6 +85,7 @@ for (const asset of [...Object.values(manifest.models), ...Object.values(manifes
   assert.ok(fs.existsSync(path.join(workspace, 'public', asset.url)), `Missing extracted asset ${asset.url}`);
 }
 JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-base-layout-v1.schema.json'), 'utf8'));
+JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-map-source-v1.schema.json'), 'utf8'));
 assert.deepEqual(cloneProject(validationFixture), validationFixture);
 
 console.log(`Verified ${terrain.heights.length.toLocaleString()} terrain vertices, ${entities.length} state entities, ${baseTemplates.templates.length} base templates, JSON round-trips, power rules, and extracted assets.`);

@@ -1,0 +1,58 @@
+name: Release desktop editor
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version without the v prefix
+        required: true
+        default: '0.2.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Build self-contained WebView2 app
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
+          npm run build:desktop -- --version $version
+          Get-FileHash "dist/desktop/WulframForge-$version-win-x64-self-contained.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Encoding ascii "dist/desktop/SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WulframForge-win-x64
+          path: |
+            dist/desktop/WulframForge-*-win-x64-self-contained.zip
+            dist/desktop/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem "dist/desktop/WulframForge-*-win-x64-self-contained.zip", "dist/desktop/SHA256SUMS.txt" | ForEach-Object FullName
+          gh release create "${{ github.ref_name }}" $files --repo "${{ github.repository }}" --verify-tag --title "Wulfram Forge ${{ github.ref_name }}" --generate-notes

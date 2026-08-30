@@ -12,6 +12,13 @@ import {
   safeMapName,
 } from '../lib/map-package.ts';
 import {
+  MAP_SOURCE_FILES,
+  createMapSourceArchive,
+  createMapSourceFiles,
+  parseMapSourceFiles,
+  readMapSourceArchive,
+} from '../lib/map-source.ts';
+import {
   DEFAULT_VALIDATION,
   parseBaseLayout,
   parseLand,
@@ -218,4 +225,43 @@ void test('ZIP output is deterministic for the same map revision', async () => {
   const first = Buffer.from(await createMapArchive(project));
   const second = Buffer.from(await createMapArchive(project));
   assert.deepEqual(second, first);
+});
+
+void test('Git source round-trips and recompiles every original map', async () => {
+  for (const fixture of discovered.fixtures) {
+    const project = loadFixtureProject(fixture);
+    const sourceFiles = createMapSourceFiles(project);
+    assert.deepEqual(Object.keys(sourceFiles), [...MAP_SOURCE_FILES], `${fixture.name}: canonical source file set`);
+    assert.match(sourceFiles['terrain.tsv'], /^x\ty\ttexture\theight\n/, `${fixture.name}: terrain TSV header`);
+    assert.equal(sourceFiles['terrain.tsv'].split('\n').length - 2, project.terrain.width * project.terrain.height, `${fixture.name}: one line per terrain vertex`);
+    assert.equal(sourceFiles['entities.jsonl'].split('\n').filter(Boolean).length, project.entities.length, `${fixture.name}: one line per entity`);
+
+    const reloaded = parseMapSourceFiles(sourceFiles);
+    assertTerrainEqual(reloaded.terrain, project.terrain, `${fixture.name} Git source terrain`);
+    assertStateEqual(reloaded.entities, project.entities, `${fixture.name} Git source entities`);
+    assert.deepEqual(reloaded.validation, project.validation, `${fixture.name}: Git source validation`);
+    assert.equal(reloaded.name, project.name, `${fixture.name}: Git source name`);
+    assert.equal(reloaded.updatedAt, project.updatedAt, `${fixture.name}: Git source timestamp`);
+    assert.deepEqual(createMapSourceFiles(reloaded), sourceFiles, `${fixture.name}: Git source writer is idempotent`);
+
+    const expectedPackage = createMapArchiveFiles(project);
+    const recompiledPackage = createMapArchiveFiles(reloaded);
+    assert.deepEqual(recompiledPackage, expectedPackage, `${fixture.name}: source compiles to the canonical Wulfram package files`);
+  }
+
+  console.log(`Converted, reloaded, and recompiled ${discovered.fixtures.length} original maps through the Git source format.`);
+});
+
+void test('Git source ZIP output is deterministic and self-contained', async () => {
+  const project = loadFixtureProject(discovered.fixtures[0]);
+  const root = safeMapName(project.name);
+  const first = Buffer.from(await createMapSourceArchive(project, root));
+  const second = Buffer.from(await createMapSourceArchive(project, root));
+  assert.deepEqual(second, first);
+  const reloaded = await readMapSourceArchive(first);
+  assert.ok(reloaded);
+  assert.equal(reloaded.root, root);
+  assert.deepEqual(reloaded.files, createMapSourceFiles(project));
+  assertTerrainEqual(reloaded.project.terrain, project.terrain, 'source ZIP terrain');
+  assertStateEqual(reloaded.project.entities, project.entities, 'source ZIP entities');
 });

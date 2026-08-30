@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/blackwatergaming/wulfram-maps/schemas/wulfram-map-source-v1.schema.json",
+  "title": "Wulfram Git map source",
+  "description": "Metadata for a version-controlled Wulfram map source directory. Terrain vertices, entities, and tag maps live in adjacent line-oriented files.",
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "name",
+    "terrain",
+    "validation",
+    "updatedAt"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "format": { "const": "wulfram-map-source" },
+    "version": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "terrain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "worldWidth", "worldHeight"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 2 },
+        "height": { "type": "integer", "minimum": 2 },
+        "worldWidth": { "type": "number", "exclusiveMinimum": 0 },
+        "worldHeight": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serviceRadius",
+        "backupRadius",
+        "maxSlopeDegrees",
+        "minSpacing"
+      ],
+      "properties": {
+        "serviceRadius": { "type": "number", "minimum": 0 },
+        "backupRadius": { "type": "number", "minimum": 0 },
+        "maxSlopeDegrees": { "type": "number", "minimum": 0, "maximum": 90 },
+        "minSpacing": { "type": "number", "minimum": 0 }
+      }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

@@ -7,8 +7,10 @@ import {
   CheckCircle2,
   CircleDot,
   Download,
+  FileArchive,
   FileJson,
   FolderOpen,
+  GitBranch,
   Grid3X3,
   Image as ImageIcon,
   Layers3,
@@ -17,11 +19,14 @@ import {
   Pickaxe,
   Plus,
   Redo2,
+  RefreshCw,
   RotateCw,
   Save,
   Search,
+  Settings2,
   Trash2,
   Undo2,
+  Upload,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +34,22 @@ import { Button } from '@/components/ui/button';
 import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
 import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
+import {
+  configureLocalRepository,
+  hasNativeRepositoryBridge,
+  listLocalRepositoryMaps,
+  loadLocalRepositoryMap,
+  publishLocalRepositoryMap,
+  saveLocalRepositoryMap,
+  type RepositoryCatalog,
+} from '@/lib/map-repository-client';
+import {
+  MAP_SOURCE_FILES,
+  createMapSourceArchive,
+  parseMapSourceFiles,
+  readMapSourceArchive,
+  type MapSourceFiles,
+} from '@/lib/map-source';
 import { shouldPaintTextureVertex } from '@/lib/terrain-blend';
 import {
   CATALOG,
@@ -183,6 +204,11 @@ export function EditorApp() {
   const [redoStack, setRedoStack] = useState<WulframProject[]>([]);
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState<Notice>({ tone: 'working', text: 'Loading original Wulfram assets…' });
+  const [repositoryCatalog, setRepositoryCatalog] = useState<RepositoryCatalog>();
+  const [repositorySlug, setRepositorySlug] = useState('');
+  const [repositoryChecked, setRepositoryChecked] = useState(false);
+  const [repositoryBusy, setRepositoryBusy] = useState(false);
+  const [nativeRepositoryBridge] = useState(hasNativeRepositoryBridge);
   const importRef = useRef<HTMLInputElement>(null);
   const heightmapRef = useRef<HTMLInputElement>(null);
   const strokeSnapshotRef = useRef<WulframProject | null>(null);
@@ -256,6 +282,45 @@ export function EditorApp() {
     }
     void load();
     return () => { cancelled = true; };
+  }, []);
+
+  const refreshRepository = useCallback(async (announce = false) => {
+    try {
+      const catalog = await listLocalRepositoryMaps(announce ? 8000 : 1500);
+      setRepositoryCatalog(catalog);
+      setRepositorySlug((current) => catalog.maps.some((map) => map.slug === current) ? current : (catalog.maps[0]?.slug ?? ''));
+      if (announce) setNotice({ tone: 'ready', text: `Found ${catalog.maps.length} map${catalog.maps.length === 1 ? '' : 's'} in the local repository` });
+    } catch (error) {
+      setRepositoryCatalog(undefined);
+      if (announce) {
+        setNotice({
+          tone: 'error',
+          text: error instanceof Error ? `${error.message} Run npm run dev to enable repository access.` : 'Local maps service is offline.',
+        });
+      }
+    } finally {
+      setRepositoryChecked(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshRepository(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshRepository]);
+
+  const configureRepository = useCallback(async () => {
+    try {
+      setRepositoryBusy(true);
+      const catalog = await configureLocalRepository();
+      setRepositoryCatalog(catalog);
+      setRepositorySlug(catalog.maps[0]?.slug ?? '');
+      setRepositoryChecked(true);
+      setNotice({ tone: 'ready', text: `Using ${catalog.repository}` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Repository selection failed.' });
+    } finally {
+      setRepositoryBusy(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -364,6 +429,40 @@ export function EditorApp() {
     () => manifest ? CATALOG.filter((item) => catalogItemHasModel(item, team, manifest)) : [],
     [manifest, team],
   );
+  const placementPreview = useMemo((): StateEntity[] => {
+    if (mode !== 'base' || !cursor || !project || !manifest) return [];
+    const [x, y] = cursor;
+    if (selectedTemplate) {
+      return instantiateBaseTemplate(
+        selectedTemplate,
+        project.terrain,
+        [x, y],
+        team,
+        templateScale,
+        templateYaw * Math.PI / 180,
+        manifest,
+      ).entities.map((entity, index) => ({ ...entity, id: `placement-preview-${index}` }));
+    }
+    const item = placeableCatalog.find((entry) => entry.key === selectedPlacementKey);
+    if (!item) return [];
+    const defaultData = analysis?.turretDefaults[item.token];
+    const placementDefault = analysis?.placementDefaults?.[item.token];
+    const ground = sampleHeight(project.terrain, x, y);
+    const offset = placementDefault?.heightOffset ?? defaultData?.heightOffset ?? 0;
+    const yaw = defaultData?.yawCircularMean ?? 0;
+    const snap = usesFootprintTerrainSnap(item.token)
+      ? snapStructureToTerrain(project.terrain, x, y, item.footprint, yaw, offset, placementDefault?.snapMargin ?? 0.75)
+      : undefined;
+    return [{
+      id: 'placement-preview-0',
+      token: item.token,
+      subtype: item.subtype,
+      team,
+      position: [x, y, snap?.height ?? ground + offset],
+      rotation: [snap?.pitch ?? defaultData?.pitch ?? 0, snap?.roll ?? defaultData?.roll ?? 0, yaw],
+      active: 1,
+    }];
+  }, [analysis, cursor, manifest, mode, placeableCatalog, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
 
   const applyBrush = useCallback((worldX: number, worldY: number) => {
     if (!manifest) return;
@@ -557,11 +656,15 @@ export function EditorApp() {
       let tagmapText: string | undefined;
       let tagmap2Text: string | undefined;
       let jsonValue: unknown;
+      let sourceProject: WulframProject | undefined;
+      const sourceFiles: Partial<MapSourceFiles> = {};
       let importedName: string | undefined;
 
       const consume = async (name: string, text: string) => {
         const base = name.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? name.toLowerCase();
-        if (base === 'land' || base.endsWith('.land')) landText = text;
+        if (MAP_SOURCE_FILES.includes(base as (typeof MAP_SOURCE_FILES)[number])) {
+          sourceFiles[base as (typeof MAP_SOURCE_FILES)[number]] = text;
+        } else if (base === 'land' || base.endsWith('.land')) landText = text;
         else if (base === 'state' || /^state\d*$/.test(base) || base.endsWith('.state')) stateText = text;
         else if (base === 'tagmap2' || base.endsWith('.tagmap2')) tagmap2Text = text;
         else if (base === 'tagmap' || base.endsWith('.tagmap')) tagmapText = text;
@@ -572,6 +675,12 @@ export function EditorApp() {
       for (const file of files) {
         if (/\.zip$/i.test(file.name)) {
           importedName = file.name.replace(/\.zip$/i, '');
+          const sourceArchive = await readMapSourceArchive(file);
+          if (sourceArchive) {
+            sourceProject = sourceArchive.project;
+            importedName = sourceArchive.root.split('/').pop() || importedName;
+            continue;
+          }
           for (const entry of await readMapArchive(file)) {
             await consume(entry.name, entry.text);
           }
@@ -581,6 +690,19 @@ export function EditorApp() {
             importedName = file.name.replace(/\.[^.]+$/, '');
           }
         }
+      }
+
+      if (!sourceProject && MAP_SOURCE_FILES.every((fileName) => typeof sourceFiles[fileName] === 'string')) {
+        sourceProject = parseMapSourceFiles(sourceFiles);
+      }
+
+      if (sourceProject) {
+        pushHistory(cloneProject(project));
+        setProject(sourceProject);
+        setDirty(true);
+        setSelectedEntityId(undefined);
+        setNotice({ tone: 'ready', text: `Git map source ${sourceProject.name} imported` });
+        return;
       }
 
       if (jsonValue && typeof jsonValue === 'object' && (jsonValue as WulframProject).format === 'wulfram-map-project') {
@@ -636,6 +758,19 @@ export function EditorApp() {
     setNotice({ tone: 'ready', text: 'New-server JSON base layout exported' });
   }, [project]);
 
+  const exportSource = useCallback(async () => {
+    if (!project) return;
+    try {
+      const slug = safeMapName(project.name);
+      setNotice({ tone: 'working', text: 'Packing line-oriented Git map source…' });
+      const archive = await createMapSourceArchive(project, slug);
+      downloadBlob(new Blob([archive], { type: 'application/zip' }), `${slug}-source.zip`);
+      setNotice({ tone: 'ready', text: 'Git-friendly TSV, JSONL, and tag-map source exported' });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Source export failed.' });
+    }
+  }, [project]);
+
   const exportMap = useCallback(async () => {
     if (!project) return;
     try {
@@ -649,6 +784,51 @@ export function EditorApp() {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export failed.' });
     }
   }, [project]);
+
+  const loadRepositorySelection = useCallback(async () => {
+    if (!repositorySlug || !project) return;
+    if (dirty && !window.confirm('Load the selected repository map? Your current project is autosaved in this browser, but the canvas will be replaced.')) return;
+    try {
+      setRepositoryBusy(true);
+      setNotice({ tone: 'working', text: `Loading ${repositorySlug} from the local maps checkout…` });
+      const loaded = await loadLocalRepositoryMap(repositorySlug);
+      pushHistory(cloneProject(project));
+      setProject(loaded.project);
+      setRedoStack([]);
+      setSelectedEntityId(undefined);
+      setDirty(false);
+      setNotice({ tone: 'ready', text: `${loaded.project.name} loaded from Git source` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Repository map load failed.' });
+    } finally {
+      setRepositoryBusy(false);
+    }
+  }, [dirty, project, pushHistory, repositorySlug]);
+
+  const saveRepositorySelection = useCallback(async (publish: boolean) => {
+    if (!project) return;
+    const slug = repositorySlug || safeMapName(project.name);
+    if (publish && !window.confirm(`Commit and push ${project.name} to blackwatergaming/wulfram-maps?`)) return;
+    try {
+      setRepositoryBusy(true);
+      setNotice({ tone: 'working', text: publish ? `Saving and publishing ${slug}…` : `Saving ${slug} as Git map source…` });
+      const saved = await saveLocalRepositoryMap(slug, project);
+      setProject(saved.project);
+      setRepositorySlug(slug);
+      setDirty(false);
+      if (publish) {
+        const result = await publishLocalRepositoryMap(slug);
+        setNotice({ tone: 'ready', text: result.message });
+      } else {
+        setNotice({ tone: 'ready', text: `${saved.project.name} saved to maps/${slug}` });
+      }
+      await refreshRepository(false);
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Repository map save failed.' });
+    } finally {
+      setRepositoryBusy(false);
+    }
+  }, [project, refreshRepository, repositorySlug]);
 
   const newMap = useCallback(() => {
     if (dirty && !window.confirm('Start a new map? Your current project is autosaved locally, but unexported changes will leave the canvas.')) return;
@@ -675,7 +855,7 @@ export function EditorApp() {
   if (!manifest || !baseTemplates || !project) {
     return (
       <main className="loading-screen">
-        <img alt="Wulfram II" src="/wulfram2-logo.png" />
+        <img alt="Wulfram II" src="/assets/wulfram2-logo.png" />
         <div className="loading-bar"><span /></div>
         <p>{notice.text}</p>
       </main>
@@ -733,11 +913,12 @@ export function EditorApp() {
           <Badge className="source-badge" variant="outline">ORIGINAL ASSETS</Badge>
         </div>
         <div className="top-actions">
-          <Button onClick={newMap} size="sm" variant="ghost"><Plus /> New</Button>
-          <Button onClick={() => importRef.current?.click()} size="sm" variant="ghost"><FolderOpen /> Import</Button>
-          <Button onClick={saveLocal} size="sm" variant="ghost"><Save /> Save</Button>
-          <Button onClick={exportJson} size="sm" variant="ghost"><FileJson /> JSON</Button>
-          <Button className="export-button" onClick={() => void exportMap()} size="sm"><Download /> Export map</Button>
+          <Button onClick={newMap} size="sm" title="New map" variant="ghost"><Plus /> New</Button>
+          <Button onClick={() => importRef.current?.click()} size="sm" title="Import map or heightmap" variant="ghost"><FolderOpen /> Import</Button>
+          <Button onClick={saveLocal} size="sm" title="Save locally" variant="ghost"><Save /> Save</Button>
+          <Button onClick={() => void exportSource()} size="sm" title="Export Git source" variant="ghost"><FileArchive /> Source</Button>
+          <Button onClick={exportJson} size="sm" title="Export server JSON" variant="ghost"><FileJson /> JSON</Button>
+          <Button className="export-button" onClick={() => void exportMap()} size="sm" title="Export Wulfram package"><Download /> Export map</Button>
         </div>
       </header>
 
@@ -870,6 +1051,28 @@ export function EditorApp() {
               {mode === 'terrain' ? <Mountain /> : <Box />}
               <span>{modeLabel}</span>
             </div>
+            <div
+              className={`repository-controls ${repositoryCatalog ? 'online' : 'offline'}`}
+              title={repositoryCatalog
+                ? `${repositoryCatalog.repository} · ${repositoryCatalog.branch} · ${repositoryCatalog.changes} uncommitted map change(s)`
+                : 'Start the editor with npm run dev to enable the loopback maps service.'}
+            >
+              <GitBranch aria-hidden="true" />
+              <select
+                aria-label="Repository map"
+                disabled={!repositoryCatalog || repositoryBusy}
+                onChange={(event) => setRepositorySlug(event.target.value)}
+                value={repositoryCatalog ? repositorySlug : ''}
+              >
+                <option value="">{repositoryCatalog ? 'New repository map…' : repositoryChecked ? 'Maps service offline' : 'Checking maps…'}</option>
+                {repositoryCatalog?.maps.map((map) => <option key={map.slug} value={map.slug}>{map.name} · {map.slug}</option>)}
+              </select>
+              {nativeRepositoryBridge && <button aria-label="Choose maps repository" disabled={repositoryBusy} onClick={() => void configureRepository()} title="Choose the local wulfram-maps checkout" type="button"><Settings2 /></button>}
+              <button aria-label="Refresh repository maps" disabled={repositoryBusy} onClick={() => void refreshRepository(true)} title="Refresh repository maps" type="button"><RefreshCw /></button>
+              <button disabled={!repositoryCatalog || !repositorySlug || repositoryBusy} onClick={() => void loadRepositorySelection()} title="Load selected Git source" type="button"><FolderOpen /><span>Load</span></button>
+              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(false)} title="Save canonical source to the local maps checkout" type="button"><Save /><span>Save</span></button>
+              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(true)} title="Save, commit, and push this map" type="button"><Upload /><span>Publish</span></button>
+            </div>
             <div className="stage-stats">
               <span>{project.terrain.width} × {project.terrain.height}</span>
               <span>{project.terrain.worldWidth.toLocaleString()} × {project.terrain.worldHeight.toLocaleString()} u</span>
@@ -887,6 +1090,8 @@ export function EditorApp() {
             onPlace={placeUnit}
             onSelectEntity={setSelectedEntityId}
             onTerrainStroke={onTerrainStroke}
+            placementPreview={placementPreview}
+            placementPreviewAnchor={cursor ? [cursor[0], cursor[1]] : undefined}
             selectedEntityId={selectedEntityId}
             selectedPlacementKey={activePlacementKey}
             serviceRadius={project.validation.serviceRadius}
@@ -898,7 +1103,7 @@ export function EditorApp() {
           <footer className={`statusbar ${notice.tone}`}>
             <span>{notice.tone === 'error' ? <AlertTriangle /> : notice.tone === 'working' ? <CircleDot /> : <CheckCircle2 />}{notice.text}</span>
             {cursor && <span className="cursor-position">X {cursor[0].toFixed(1)} · Y {cursor[1].toFixed(1)} · Z {cursor[2].toFixed(1)}</span>}
-            <span className="format-state">LAND + STATE + JSON</span>
+            <span className="format-state">GIT SOURCE + WULFRAM PACKAGE</span>
           </footer>
         </section>
 

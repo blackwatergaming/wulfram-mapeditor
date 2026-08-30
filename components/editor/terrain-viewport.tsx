@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls';
 import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
-import { catalogFor, modelNameFor, resolveTextureName } from '@/lib/wulfram';
+import { catalogFor, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
 
 export type EditorMode = 'terrain' | 'base';
 export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint';
@@ -21,6 +21,8 @@ interface TerrainViewportProps {
   terrainTool: TerrainTool;
   brushRadius: number;
   textureBlend: number;
+  placementPreview: StateEntity[];
+  placementPreviewAnchor?: [number, number];
   selectedEntityId?: string;
   selectedPlacementKey: string;
   serviceRadius: number;
@@ -154,6 +156,11 @@ function updateTerrainHeights(geometry: THREE.BufferGeometry, terrain: TerrainDa
   geometry.computeBoundingSphere();
 }
 
+function terrainTextureDimensions(terrain: TerrainData) {
+  const tile = Math.max(2, Math.min(7, Math.floor(896 / Math.max(terrain.width, terrain.height))));
+  return { tile, width: terrain.width * tile, height: terrain.height * tile };
+}
+
 async function paintTerrainCanvas(
   canvas: HTMLCanvasElement,
   terrain: TerrainData,
@@ -163,11 +170,12 @@ async function paintTerrainCanvas(
   cancelled: () => boolean,
   invalidate: () => void,
 ) {
+  const dimensions = terrainTextureDimensions(terrain);
+  if (canvas.width !== dimensions.width) canvas.width = dimensions.width;
+  if (canvas.height !== dimensions.height) canvas.height = dimensions.height;
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) return;
-  const tile = Math.max(2, Math.min(7, Math.floor(896 / Math.max(terrain.width, terrain.height))));
-  canvas.width = terrain.width * tile;
-  canvas.height = terrain.height * tile;
+  const { tile } = dimensions;
   context.imageSmoothingEnabled = false;
 
   const names = terrain.tagmap2.map((line) => resolveTextureName(line, manifest.terrainTextures));
@@ -289,6 +297,62 @@ function fallbackUnit(entity: StateEntity, scale: number): THREE.Group {
   return group;
 }
 
+function stylePlacementGhost(root: THREE.Object3D, team: number) {
+  const accent = new THREE.Color(team === 0 ? 0xd8dcde : team === 2 ? 0x6eafff : 0xff8b68);
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.material) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      material.transparent = true;
+      material.opacity = 0.62;
+      material.depthWrite = false;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.color.lerp(accent, 0.42);
+        material.emissive.copy(accent);
+        material.emissiveIntensity = 0.22;
+        material.polygonOffset = true;
+        material.polygonOffsetFactor = -1;
+      }
+    }
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.renderOrder = 12;
+    mesh.raycast = () => undefined;
+  });
+}
+
+interface PlacementHolderParts {
+  holder: THREE.Group;
+  modelHolder: THREE.Group;
+  footprint: THREE.Mesh;
+}
+
+function positionPlacementGhosts(
+  root: THREE.Group,
+  holders: Map<string, PlacementHolderParts>,
+  preview: StateEntity[],
+  terrain: TerrainData,
+  mode: EditorMode,
+  scale: number,
+) {
+  root.position.set(0, 0, 0);
+  const activeIds = new Set(preview.map((entity) => entity.id));
+  for (const [id, parts] of holders) parts.holder.visible = activeIds.has(id);
+  for (const entity of preview) {
+    const parts = holders.get(entity.id);
+    if (!parts) continue;
+    parts.holder.position.set(
+      (entity.position[0] - terrain.worldWidth / 2) * scale,
+      entity.position[2] * scale,
+      (entity.position[1] - terrain.worldHeight / 2) * scale,
+    );
+    parts.modelHolder.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+    parts.footprint.position.y = (sampleHeight(terrain, entity.position[0], entity.position[1]) - entity.position[2]) * scale + 0.04;
+  }
+  root.visible = mode === 'base' && preview.length > 0;
+}
+
 async function originalUnit(
   entity: StateEntity,
   manifest: AssetManifest,
@@ -338,6 +402,8 @@ export function TerrainViewport({
   terrainTool,
   brushRadius,
   textureBlend,
+  placementPreview,
+  placementPreviewAnchor,
   selectedEntityId,
   selectedPlacementKey,
   serviceRadius,
@@ -355,6 +421,10 @@ export function TerrainViewport({
   const controlsRef = useRef<OrbitControls | null>(null);
   const terrainRootRef = useRef(new THREE.Group());
   const entityRootRef = useRef(new THREE.Group());
+  const placementRootRef = useRef(new THREE.Group());
+  const placementHoldersRef = useRef(new Map<string, PlacementHolderParts>());
+  const placementPreviewRef = useRef(placementPreview);
+  const placementPreviewAnchorRef = useRef(placementPreviewAnchor);
   const terrainMeshRef = useRef<THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | null>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const terrainTextureRef = useRef<THREE.CanvasTexture | null>(null);
@@ -370,11 +440,20 @@ export function TerrainViewport({
     () => entities.map((entity) => `${entity.id}:${entity.token}:${entity.subtype ?? ''}:${entity.team}:${entity.position.join(',')}:${entity.rotation.join(',')}:${entity.active}`).join('|'),
     [entities],
   );
+  const placementModelKey = useMemo(
+    () => placementPreview.map((entity) => `${entity.id}:${entity.token}:${entity.subtype ?? ''}:${entity.team}`).join('|'),
+    [placementPreview],
+  );
 
   useEffect(() => {
     entitiesRef.current = entities;
     terrainRef.current = terrain;
   }, [entities, terrain]);
+
+  useEffect(() => {
+    placementPreviewRef.current = placementPreview;
+    placementPreviewAnchorRef.current = placementPreviewAnchor;
+  }, [placementPreview, placementPreviewAnchor]);
 
   useEffect(() => {
     propsRef.current = { mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onCursor };
@@ -383,10 +462,12 @@ export function TerrainViewport({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const placementRoot = placementRootRef.current;
+    const placementHolders = placementHoldersRef.current;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0c0e10);
     scene.fog = new THREE.Fog(0x0c0e10, 145, 270);
-    const camera = new THREE.PerspectiveCamera(48, 1, 0.05, 500);
+    const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 500);
     camera.position.set(102, 84, 108);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -403,7 +484,7 @@ export function TerrainViewport({
     controls.dampingFactor = 0.08;
     controls.target.set(0, 0, 0);
     controls.maxPolarAngle = Math.PI * 0.48;
-    controls.minDistance = 12;
+    controls.minDistance = 0;
     controls.maxDistance = 260;
     controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
     controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
@@ -418,7 +499,7 @@ export function TerrainViewport({
     sun.shadow.camera.top = 110;
     sun.shadow.camera.bottom = -110;
     scene.add(sun);
-    scene.add(terrainRootRef.current, entityRootRef.current);
+    scene.add(terrainRootRef.current, entityRootRef.current, placementRoot);
 
     const brush = new THREE.Mesh(
       new THREE.RingGeometry(0.92, 1, 64),
@@ -558,6 +639,8 @@ export function TerrainViewport({
       window.removeEventListener('blur', clearPressedCodes);
       renderer.domElement.removeEventListener('pointerdown', focusViewport);
       controls.dispose();
+      disposeTree(placementRoot);
+      placementHolders.clear();
       renderer.dispose();
       brush.geometry.dispose();
       (brush.material as THREE.Material).dispose();
@@ -579,6 +662,9 @@ export function TerrainViewport({
     scaleRef.current = scale;
     const geometry = terrainGeometry(currentTerrain, scale);
     const canvas = document.createElement('canvas');
+    const textureDimensions = terrainTextureDimensions(currentTerrain);
+    canvas.width = textureDimensions.width;
+    canvas.height = textureDimensions.height;
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
@@ -738,6 +824,73 @@ export function TerrainViewport({
   }, [backupRadius, entitySceneKey, manifest, mode, selectedEntityId, serviceRadius, terrain.worldHeight, terrain.worldWidth]);
 
   useEffect(() => {
+    const root = placementRootRef.current;
+    const holders = placementHoldersRef.current;
+    disposeTree(root);
+    holders.clear();
+    root.position.set(0, 0, 0);
+    const blueprints = placementPreviewRef.current;
+    if (mode !== 'base' || !blueprints.length) {
+      root.visible = false;
+      invalidateRef.current();
+      return;
+    }
+
+    let cancelled = false;
+    const scale = scaleRef.current;
+    root.visible = true;
+    for (const entity of blueprints) {
+      const holder = new THREE.Group();
+      const modelHolder = new THREE.Group();
+      const placeholder = fallbackUnit(entity, scale);
+      stylePlacementGhost(placeholder, entity.team);
+      modelHolder.add(placeholder);
+      holder.add(modelHolder);
+
+      const footprintRadius = Math.max(0.25, (catalogFor(entity)?.footprint ?? 10) * scale * 0.5);
+      const footprint = new THREE.Mesh(
+        new THREE.RingGeometry(Math.max(0, footprintRadius - 0.055), footprintRadius, 40),
+        new THREE.MeshBasicMaterial({
+          color: entity.team === 0 ? 0xd8dcde : entity.team === 2 ? 0x6eafff : 0xff8b68,
+          transparent: true,
+          opacity: 0.68,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      footprint.rotation.x = -Math.PI / 2;
+      footprint.renderOrder = 13;
+      footprint.raycast = () => undefined;
+      holder.add(footprint);
+      root.add(holder);
+      holders.set(entity.id, { holder, modelHolder, footprint });
+
+      void originalUnit(entity, manifest, scale, () => invalidateRef.current()).then((model) => {
+        if (!model) return;
+        if (cancelled || !modelHolder.parent) {
+          disposeTree(model);
+          return;
+        }
+        stylePlacementGhost(model, entity.team);
+        disposeTree(placeholder);
+        modelHolder.remove(placeholder);
+        modelHolder.add(model);
+        invalidateRef.current();
+      }).catch(() => undefined);
+    }
+    invalidateRef.current();
+    return () => { cancelled = true; };
+  }, [manifest, mode, placementModelKey]);
+
+  useEffect(() => {
+    const root = placementRootRef.current;
+    const holders = placementHoldersRef.current;
+    placementPreviewAnchorRef.current = placementPreviewAnchor;
+    positionPlacementGhosts(root, holders, placementPreview, terrain, mode, scaleRef.current);
+    invalidateRef.current();
+  }, [mode, placementPreview, placementPreviewAnchor, terrain]);
+
+  useEffect(() => {
     const brush = brushRef.current;
     if (!brush) return;
     const diameter = brushRadius * scaleRef.current;
@@ -809,8 +962,21 @@ export function TerrainViewport({
       if (result) {
         brush.position.copy(result.point);
         brush.position.y += 0.08;
-        publishCursor(toWorld(result.point));
-      } else publishCursor(undefined);
+        const world = toWorld(result.point);
+        publishCursor(world);
+        const previewAnchor = placementPreviewAnchorRef.current;
+        if (propsRef.current.mode === 'base' && previewAnchor) {
+          placementRootRef.current.position.set(
+            (world[0] - previewAnchor[0]) * scaleRef.current,
+            0,
+            (world[1] - previewAnchor[1]) * scaleRef.current,
+          );
+          placementRootRef.current.visible = placementHoldersRef.current.size > 0;
+        }
+      } else {
+        publishCursor(undefined);
+        placementRootRef.current.visible = false;
+      }
       invalidateRef.current();
     };
     let pointerFrame = 0;
@@ -871,6 +1037,7 @@ export function TerrainViewport({
     };
     const onLeave = () => {
       if (brushRef.current) brushRef.current.visible = false;
+      placementRootRef.current.visible = false;
       publishCursor(undefined);
       invalidateRef.current();
     };
@@ -897,6 +1064,9 @@ export function TerrainViewport({
       <div className="viewport-badges" aria-hidden="true">
         <span>3D PERSPECTIVE</span>
         <span>ORIGINAL TEXTURES</span>
+        {mode === 'base' && placementPreview.length > 0 && (
+          <span className="placement-preview-badge">PLACEMENT PREVIEW · {placementPreview.length} {placementPreview.length === 1 ? 'UNIT' : 'UNITS'}</span>
+        )}
       </div>
       <div className="viewport-help">
         <span>Mouse · Left edit/place · Right orbit · Wheel zoom</span>
