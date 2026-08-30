@@ -46,7 +46,7 @@ function addDirectory(zip, source, prefix) {
 async function main() {
   const versionOption = process.argv.indexOf('--version');
   const version = versionOption >= 0 ? process.argv[versionOption + 1] : packageVersion;
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Use --version with a semantic version such as 0.3.0.');
+  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Use --version with a semantic version such as 0.4.0.');
 
   run(process.execPath, [path.join(workspace, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.desktop.config.ts']);
   await createDesktopAssets();

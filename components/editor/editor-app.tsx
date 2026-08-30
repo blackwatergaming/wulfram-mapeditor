@@ -45,6 +45,12 @@ import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } 
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
 import { heightsFromGrayscaleRgba } from '@/lib/heightmap';
 import {
+  terrainBrushMix,
+  terrainBrushWeight,
+  type TerrainBrushFalloff,
+  type TerrainBrushShape,
+} from '@/lib/terrain-brush';
+import {
   configureLocalRepository,
   diagnoseLocalRepository,
   hasNativeRepositoryBridge,
@@ -122,6 +128,14 @@ interface Notice {
 
 const STORAGE_KEY = 'wulfram-forge-project-v1';
 const MAX_HISTORY = 32;
+const TERRAIN_TOOL_LABELS: Record<TerrainTool, string> = {
+  sculpt: 'Raise',
+  lower: 'Lower',
+  level: 'Flatten',
+  smooth: 'Smooth',
+  paint: 'Paint texture',
+  stamp: 'Set height',
+};
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -201,6 +215,10 @@ export function EditorApp() {
   const [terrainTool, setTerrainTool] = useState<TerrainTool>('sculpt');
   const [brushRadius, setBrushRadius] = useState(165);
   const [brushStrength, setBrushStrength] = useState(32);
+  const [brushShape, setBrushShape] = useState<TerrainBrushShape>('round');
+  const [brushFalloff, setBrushFalloff] = useState<TerrainBrushFalloff>('soft');
+  const [terrainTargetHeight, setTerrainTargetHeight] = useState(0);
+  const [lastTerrainHeight, setLastTerrainHeight] = useState<number>();
   const [textureBlend, setTextureBlend] = useState(72);
   const [selectedTexture, setSelectedTexture] = useState('canyon003');
   const [textureSearch, setTextureSearch] = useState('');
@@ -238,6 +256,11 @@ export function EditorApp() {
   const heightmapRef = useRef<HTMLInputElement>(null);
   const strokeSnapshotRef = useRef<WulframProject | null>(null);
   const levelHeightRef = useRef(0);
+
+  const updateCursor = useCallback((point?: Vec3) => {
+    setCursor(point);
+    if (point) setLastTerrainHeight(point[2]);
+  }, []);
 
   useEffect(() => () => {
     if (heightmapPreviewUrl) URL.revokeObjectURL(heightmapPreviewUrl);
@@ -479,11 +502,25 @@ export function EditorApp() {
       } else if (event.key === 'Delete' && selectedEntityId) {
         mutate((draft) => { draft.entities = draft.entities.filter((entity) => entity.id !== selectedEntityId); });
         setSelectedEntityId(undefined);
+      } else if (mode === 'terrain' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const shortcutTools: Record<string, TerrainTool> = {
+          '1': 'sculpt',
+          '2': 'lower',
+          '3': 'level',
+          '4': 'smooth',
+          '5': 'paint',
+          '6': 'stamp',
+        };
+        const tool = shortcutTools[event.key];
+        if (tool) {
+          event.preventDefault();
+          setTerrainTool(tool);
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mutate, project, redo, selectedEntityId, undo]);
+  }, [mode, mutate, project, redo, selectedEntityId, undo]);
 
   const issues = useMemo(() => project ? validateProject(project) : [], [project]);
   const selectedEntity = useMemo(
@@ -579,18 +616,26 @@ export function EditorApp() {
         for (let x = minX; x <= maxX; x += 1) {
           const px = x / (terrain.width - 1) * terrain.worldWidth;
           const py = y / (terrain.height - 1) * terrain.worldHeight;
-          const distance = Math.hypot(px - worldX, py - worldY);
-          if (distance > brushRadius) continue;
+          const falloff = terrainBrushWeight(
+            px - worldX,
+            py - worldY,
+            brushRadius,
+            brushShape,
+            brushFalloff,
+          );
+          if (falloff <= 0) continue;
           const index = y * terrain.width + x;
-          const falloff = Math.pow(1 - distance / Math.max(1, brushRadius), 1.65);
           if (terrainTool === 'paint') {
             if (shouldPaintTextureVertex(x, y, textureId, falloff, brushStrength)) terrain.textureIds[index] = textureId;
           } else if (terrainTool === 'sculpt' || terrainTool === 'lower') {
             const direction = terrainTool === 'lower' ? -1 : 1;
             terrain.heights[index] += direction * brushStrength / 100 * 7 * falloff;
           } else if (terrainTool === 'level') {
-            const mix = Math.min(1, brushStrength / 100 * 0.34 * falloff);
+            const mix = terrainBrushMix(brushStrength, falloff, brushFalloff === 'hard' ? 1 : 0.34);
             terrain.heights[index] += (levelHeightRef.current - terrain.heights[index]) * mix;
+          } else if (terrainTool === 'stamp') {
+            const mix = terrainBrushMix(brushStrength, falloff);
+            terrain.heights[index] += (terrainTargetHeight - terrain.heights[index]) * mix;
           } else if (terrainTool === 'smooth') {
             let total = 0;
             let count = 0;
@@ -602,7 +647,7 @@ export function EditorApp() {
                 count += 1;
               }
             }
-            const mix = Math.min(1, brushStrength / 100 * 0.3 * falloff);
+            const mix = terrainBrushMix(brushStrength, falloff, 0.3);
             terrain.heights[index] += (total / count - terrain.heights[index]) * mix;
           }
         }
@@ -610,7 +655,7 @@ export function EditorApp() {
       return { ...current, terrain, updatedAt: new Date().toISOString() };
     });
     setDirty(true);
-  }, [brushRadius, brushStrength, manifest, selectedTexture, terrainTool]);
+  }, [brushFalloff, brushRadius, brushShape, brushStrength, manifest, selectedTexture, terrainTargetHeight, terrainTool]);
 
   const onTerrainStroke = useCallback((x: number, y: number, phase: StrokePhase) => {
     if (!project) return;
@@ -1028,7 +1073,7 @@ export function EditorApp() {
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
   const activePlacementKey = selectedTemplate ? `template:${selectedTemplate.id}` : selectedPlacementKey;
   const modeLabel = mode === 'terrain'
-    ? `${terrainTool[0].toUpperCase()}${terrainTool.slice(1)} terrain`
+    ? TERRAIN_TOOL_LABELS[terrainTool]
     : selectedTemplate
       ? `Place ${selectedTemplate.name}`
       : selectedPlacementKey
@@ -1223,9 +1268,10 @@ export function EditorApp() {
                   {([
                     ['sculpt', Pickaxe, 'Raise', '1'],
                     ['lower', Mountain, 'Lower', '2'],
-                    ['level', CircleDot, 'Level', '3'],
+                    ['level', CircleDot, 'Flatten', '3'],
                     ['smooth', RotateCw, 'Smooth', '4'],
                     ['paint', Paintbrush, 'Paint texture', '5'],
+                    ['stamp', Grid3X3, 'Set height', '6'],
                   ] as const).map(([key, Icon, label, shortcut]) => (
                     <button className={terrainTool === key ? 'tool-item active' : 'tool-item'} key={key} onClick={() => setTerrainTool(key)} type="button">
                       <Icon /><span>{label}</span><kbd>{shortcut}</kbd>
@@ -1369,10 +1415,11 @@ export function EditorApp() {
           <TerrainViewport
             backupRadius={project.validation.backupRadius}
             brushRadius={brushRadius}
+            brushShape={brushShape}
             entities={project.entities}
             manifest={manifest}
             mode={mode}
-            onCursor={setCursor}
+            onCursor={updateCursor}
             onMoveEntity={moveEntity}
             onPlace={placeUnit}
             resolveEntityMove={resolveEntityMove}
@@ -1401,16 +1448,55 @@ export function EditorApp() {
             <>
               <div className="inspector-heading">
                 <span>INSPECTOR</span>
-                <h2>{terrainTool === 'paint' ? 'Texture brush' : `${terrainTool[0].toUpperCase()}${terrainTool.slice(1)} brush`}</h2>
+                <h2>{TERRAIN_TOOL_LABELS[terrainTool]} brush</h2>
                 <Badge variant="secondary">TERRAIN</Badge>
               </div>
               <section className="inspector-block">
-                <RangeField label="Radius" max={600} min={25} onChange={setBrushRadius} step={5} suffix=" u" value={brushRadius} />
+                <RangeField label="Radius / half-size" max={600} min={25} onChange={setBrushRadius} step={5} suffix=" u" value={brushRadius} />
                 <RangeField label="Strength" max={100} min={1} onChange={setBrushStrength} suffix="%" value={brushStrength} />
                 <RangeField label="Texture blend" max={100} min={0} onChange={setTextureBlend} suffix="%" value={textureBlend} />
-                <div className="brush-profile"><span /><span /><span /></div>
-                <p className="field-help">Soft radial falloff. Texture blend controls terrain-material transitions without changing original texture IDs. Drag with the left mouse button; orbit with the right.</p>
+                <fieldset className="brush-option-group">
+                  <legend>FOOTPRINT</legend>
+                  <div className="brush-option-buttons">
+                    {(['round', 'square', 'diamond'] as const).map((shape) => (
+                      <button className={brushShape === shape ? 'active' : ''} key={shape} onClick={() => setBrushShape(shape)} type="button">{shape}</button>
+                    ))}
+                  </div>
+                </fieldset>
+                <fieldset className="brush-option-group">
+                  <legend>EDGE PROFILE</legend>
+                  <div className="brush-option-buttons">
+                    {(['soft', 'linear', 'hard'] as const).map((falloff) => (
+                      <button className={brushFalloff === falloff ? 'active' : ''} key={falloff} onClick={() => setBrushFalloff(falloff)} type="button">{falloff}</button>
+                    ))}
+                  </div>
+                </fieldset>
+                <button
+                  className="secondary-action flat-pad-preset"
+                  onClick={() => {
+                    setTerrainTool('level');
+                    setBrushShape('square');
+                    setBrushFalloff('hard');
+                    setBrushStrength(100);
+                    setNotice({ tone: 'ready', text: 'Flat-pad preset ready · click the terrain height the square should match' });
+                  }}
+                  type="button"
+                ><Grid3X3 /> Flat pad preset</button>
+                <div className={`brush-profile ${brushShape} ${brushFalloff}`}><span /><span /><span /></div>
+                <p className="field-help">Square + Hard covers every vertex evenly: Raise/Lower moves a flat pad without doming, Flatten copies the first clicked height, and Set height targets an exact value. Texture IDs remain exact pixels.</p>
               </section>
+              {terrainTool === 'stamp' && (
+                <section className="inspector-block height-stamp-controls">
+                  <p className="section-label">EXACT HEIGHT</p>
+                  <NumberField label="Target terrain height" max={5000} min={-5000} onChange={setTerrainTargetHeight} step={0.25} value={terrainTargetHeight} />
+                  <div className="height-stamp-actions">
+                    <button onClick={() => setTerrainTargetHeight((height) => height - 10)} type="button">−10</button>
+                    <button disabled={lastTerrainHeight === undefined} onClick={() => { if (lastTerrainHeight !== undefined) setTerrainTargetHeight(lastTerrainHeight); }} type="button">Sample last cursor</button>
+                    <button onClick={() => setTerrainTargetHeight((height) => height + 10)} type="button">+10</button>
+                  </div>
+                  <p className="field-help">At 100% strength with a Hard edge, all covered vertices are written to this exact height in one pass.</p>
+                </section>
+              )}
               {terrainTool === 'paint' && (
                 <section className="inspector-block selected-texture">
                   <p className="section-label">PAINT MATERIAL</p>

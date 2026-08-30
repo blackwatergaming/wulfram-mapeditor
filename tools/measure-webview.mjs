@@ -216,6 +216,56 @@ if (process.env.WULFRAM_FORGE_HEIGHTMAP_TEST === '1') {
   }))()`);
 }
 
+let terrainBrushTest;
+if (process.env.WULFRAM_FORGE_BRUSH_TEST === '1') {
+  await evaluate(`(() => {
+    window.prompt = () => 'Brush Test';
+    window.confirm = () => true;
+    [...document.querySelectorAll('.top-actions button')].find((button) => button.textContent?.includes('New'))?.click();
+    document.querySelector('.mode-switch button:nth-child(1)')?.click();
+    [...document.querySelectorAll('.tool-item')].find((button) => button.textContent?.includes('Set height'))?.click();
+    [...document.querySelectorAll('.brush-option-group')][0]?.querySelectorAll('button')[1]?.click();
+    [...document.querySelectorAll('.brush-option-group')][1]?.querySelectorAll('button')[2]?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await evaluate(`(() => {
+    const setInput = (input, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, String(value));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const target = document.querySelector('.height-stamp-controls input[type="number"]');
+    const strength = [...document.querySelectorAll('.range-field')].find((label) => label.querySelector('b')?.textContent === 'Strength')?.querySelector('input');
+    if (target) setInput(target, 42);
+    if (strength) setInput(strength, 100);
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  const brushPoint = await evaluate(`(() => {
+    const rect = document.querySelector('.terrain-viewport').getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.57 };
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: brushPoint.x, y: brushPoint.y, button: 'left', buttons: 1, clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: brushPoint.x, y: brushPoint.y, button: 'left', buttons: 0, clickCount: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  terrainBrushTest = await evaluate(`(() => {
+    const saved = JSON.parse(localStorage.getItem('wulfram-forge-project-v1'));
+    const changed = saved.terrain.heights.filter((height) => Math.abs(height) > 1e-9);
+    return {
+      tool: [...document.querySelectorAll('.tool-item.active')].map((button) => button.textContent?.trim()),
+      shape: [...document.querySelectorAll('.brush-option-group')][0]?.querySelector('button.active')?.textContent,
+      falloff: [...document.querySelectorAll('.brush-option-group')][1]?.querySelector('button.active')?.textContent,
+      target: document.querySelector('.height-stamp-controls input[type="number"]')?.value,
+      changedVertices: changed.length,
+      exactVertices: changed.filter((height) => Math.abs(height - 42) < 1e-9).length,
+      minimum: changed.length ? Math.min(...changed) : null,
+      maximum: changed.length ? Math.max(...changed) : null,
+    };
+  })()`);
+}
+
 const layout = await evaluate(`(() => {
   const selectors = ['.editor-shell', '.topbar', '.workspace', '.tool-rail', '.stage-column', '.stage-toolbar', '.terrain-viewport', '.inspector'];
   return {
@@ -267,5 +317,5 @@ const relevantEvents = events
   .filter((event) => event.method === 'Log.entryAdded' || event.method === 'Runtime.exceptionThrown' || event.method === 'Network.loadingFailed')
   .map((event) => ({ method: event.method, params: event.params }));
 
-console.log(JSON.stringify({ target: { title: target.title, url: target.url }, repositoryTest, placementTest, repositoryWizardTest, unitDragTest, escapePlacementTest, heightmapDialogTest, layout, textureProbe, frameTiming, cameraFrameTiming, metrics: metrics.metrics, events: relevantEvents, screenshotPath }, null, 2));
+console.log(JSON.stringify({ target: { title: target.title, url: target.url }, repositoryTest, placementTest, repositoryWizardTest, unitDragTest, escapePlacementTest, heightmapDialogTest, terrainBrushTest, layout, textureProbe, frameTiming, cameraFrameTiming, metrics: metrics.metrics, events: relevantEvents, screenshotPath }, null, 2));
 socket.close();

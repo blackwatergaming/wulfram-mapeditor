@@ -28,11 +28,14 @@ internal sealed class MainForm : Form
         try
         {
             string webRoot = WebAssets.Extract();
-            string userData = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "BlackwaterGaming",
-                "WulframForge",
-                "WebView2");
+            string? userDataOverride = Environment.GetEnvironmentVariable("WULFRAM_FORGE_USER_DATA_DIR");
+            string userData = string.IsNullOrWhiteSpace(userDataOverride)
+                ? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "BlackwaterGaming",
+                    "WulframForge",
+                    "WebView2")
+                : Path.GetFullPath(Environment.ExpandEnvironmentVariables(userDataOverride));
             Directory.CreateDirectory(userData);
 
             string fixedRuntime = Path.Combine(AppContext.BaseDirectory, "WebView2Runtime");

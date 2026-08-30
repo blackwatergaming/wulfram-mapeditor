@@ -5,12 +5,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls';
+import type { TerrainBrushShape } from '@/lib/terrain-brush';
 import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
 import { MODEL_WORLD_SCALE, catalogFor, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
 
 export type EditorMode = 'terrain' | 'base';
-export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint';
+export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint' | 'stamp';
 export type StrokePhase = 'start' | 'move' | 'end';
 
 interface TerrainViewportProps {
@@ -20,6 +21,7 @@ interface TerrainViewportProps {
   mode: EditorMode;
   terrainTool: TerrainTool;
   brushRadius: number;
+  brushShape: TerrainBrushShape;
   textureBlend: number;
   placementPreview: StateEntity[];
   placementPreviewAnchor?: [number, number];
@@ -78,6 +80,15 @@ function colorChannels(color: string): [number, number, number] {
   return match
     ? [Number.parseInt(match[1], 16), Number.parseInt(match[2], 16), Number.parseInt(match[3], 16)]
     : [91, 70, 56];
+}
+
+function brushOutlineGeometry(shape: TerrainBrushShape): THREE.RingGeometry {
+  if (shape === 'square') {
+    const cornerRadius = Math.SQRT2;
+    return new THREE.RingGeometry(cornerRadius * 0.92, cornerRadius, 4, 1, Math.PI / 4);
+  }
+  if (shape === 'diamond') return new THREE.RingGeometry(0.92, 1, 4);
+  return new THREE.RingGeometry(0.92, 1, 64);
 }
 
 function loadTexturePixels(url: string): Promise<TexturePixels> {
@@ -418,6 +429,7 @@ export function TerrainViewport({
   mode,
   terrainTool,
   brushRadius,
+  brushShape,
   textureBlend,
   placementPreview,
   placementPreviewAnchor,
@@ -521,7 +533,7 @@ export function TerrainViewport({
     scene.add(terrainRootRef.current, entityRootRef.current, placementRoot);
 
     const brush = new THREE.Mesh(
-      new THREE.RingGeometry(0.92, 1, 64),
+      brushOutlineGeometry('round'),
       new THREE.MeshBasicMaterial({ color: 0xffa15f, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthTest: false }),
     );
     brush.rotation.x = -Math.PI / 2;
@@ -919,7 +931,16 @@ export function TerrainViewport({
     const diameter = brushRadius * scaleRef.current;
     brush.scale.set(diameter, diameter, diameter);
     invalidateRef.current();
-  }, [brushRadius]);
+  }, [brushRadius, terrain.worldHeight, terrain.worldWidth]);
+
+  useEffect(() => {
+    const brush = brushRef.current;
+    if (!brush) return;
+    const previous = brush.geometry;
+    brush.geometry = brushOutlineGeometry(brushShape);
+    previous.dispose();
+    invalidateRef.current();
+  }, [brushShape]);
 
   useEffect(() => {
     const renderer = rendererRef.current;

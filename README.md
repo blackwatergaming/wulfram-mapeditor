@@ -5,7 +5,7 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 ## What works
 
 - Full map lifecycle: new map, import, edit, validate, local save/autosave, undo/redo, and ZIP export.
-- Terrain mode with raise, lower, level, smooth, and original-texture paint brushes. Painting uses stable edge feathering, while the viewport performs normalized multi-texture blending with an adjustable transition width and strict nearest-neighbor texel sampling.
+- Terrain mode with raise, lower, flatten, smooth, exact-height, and original-texture paint brushes. Every tool supports Round, Square, or Diamond footprints and Soft, Linear, or Hard edges; the Flat pad preset makes a hard square that stays level while it is raised or lowered. Painting uses stable edge feathering, while the viewport performs normalized multi-texture blending with an adjustable transition width and strict nearest-neighbor texel sampling.
 - Event-driven 3D rendering with static shadow reuse, frame-coalesced pointer sampling, allocation-free blend weights, and independent terrain/texture/unit update paths.
 - Full keyboard camera control: `WASD` pans, arrow keys turn and tilt, `Q`/`E` or `+`/`-` zoom, and `Home` resets the view. Right-drag orbits and the mouse wheel zooms, with no artificial close-zoom limit.
 - Grayscale image import with a preview, explicit minimum/maximum heights, midtone curve, and 0–6 spike-smoothing passes. Image resampling remains nearest-pixel and smoothing can be disabled.
@@ -20,7 +20,7 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 - Repository dropdown/load/save/publish controls backed by a loopback-only local service in browser mode and a native bridge in the desktop app. A setup wizard diagnoses Git/GitHub/checkout issues, manages branches, and publishes commits through pull requests into `main`.
 - A self-contained Windows x64 Edge WebView2 app with per-monitor DPI handling, responsive high-DPI controls, and embedded editor/assets. See [the desktop release guide](docs/DESKTOP_RELEASE.md).
 
-Download [Wulfram Forge v0.3.0](https://github.com/blackwatergaming/wulfram-mapeditor/releases/tag/v0.3.0), extract the ZIP, and run `WulframForge/WulframForge.exe`. Node.js and a local web server are not required for the desktop build.
+Download [Wulfram Forge v0.4.0](https://github.com/blackwatergaming/wulfram-mapeditor/releases/tag/v0.4.0), extract the ZIP, and run `WulframForge/WulframForge.exe`. Node.js and a local web server are not required for the desktop build.
 
 The built-in Crossroads sample is read directly from the shipped map data. Gun and flak placement defaults come from robust statistics over 390 shipped turret records. The original client’s placement routines and checkerboard triangle interpolation were checked in Ghidra: rotations are radians, median gun/flak ground offsets are 16.420/15.847 world units, and power thresholds use `backupRadius - 10`, `2 × serviceRadius + 10`, and `serviceRadius - 10`. Power radii are server-supplied at runtime, so the editor exposes and stores them rather than pretending they are executable constants.
 
@@ -44,7 +44,7 @@ npm run verify:formats
 npm run build
 ```
 
-`npm test` discovers every original map under `../wulfram-debug/data/maps` (or `WULFRAM_MAPS_DIR`), then runs each through the actual editor writers and ZIP packager. It reloads the generated files and compares terrain dimensions, every height and texture index, tag maps, unit order/types, cargo subtypes, teams, positions, rotations, active flags, JSON layout, and browser backup. It also matches all extracted template units back to their source state rows, tests model-bounds terrain fitting, grayscale shaping/smoothing, normalized texture blending, and the branch/commit/push/PR lifecycle against temporary Git remotes. The checked-in Crossroads map is used as a portable fallback when the sibling asset tree is unavailable.
+`npm test` discovers every original map under `../wulfram-debug/data/maps` (or `WULFRAM_MAPS_DIR`), then runs each through the actual editor writers and ZIP packager. It reloads the generated files and compares terrain dimensions, every height and texture index, tag maps, unit order/types, cargo subtypes, teams, positions, rotations, active flags, JSON layout, and browser backup. It also matches all extracted template units back to their source state rows, tests brush footprints/hard height stamps, model-bounds terrain fitting, grayscale shaping/smoothing, normalized texture blending, and the branch/commit/push/PR lifecycle against temporary Git remotes. The checked-in Crossroads map is used as a portable fallback when the sibling asset tree is unavailable.
 
 ## Asset extraction
 
