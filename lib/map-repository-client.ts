@@ -17,12 +17,42 @@ export interface RepositoryCatalog {
   branch: string;
   remote: string;
   changes: number;
+  branches: string[];
+  defaultBranch: string;
   maps: RepositoryMapSummary[];
 }
 
-interface RepositoryMapResponse extends Omit<RepositoryCatalog, 'maps'> {
+export interface RepositoryDiagnosticCheck {
+  id: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail';
+  detail: string;
+  fix?: string;
+}
+
+export interface RepositoryDiagnostics extends Partial<Omit<RepositoryCatalog, 'maps'>> {
+  ok: boolean;
+  service: string;
+  repository: string;
+  checks: RepositoryDiagnosticCheck[];
+}
+
+interface RepositoryMapResponse {
   slug: string;
   project: WulframProject;
+  repository?: string;
+  branch?: string;
+  remote?: string;
+  changes?: number;
+}
+
+export interface RepositoryPublishResult extends RepositoryCatalog {
+  committed: boolean;
+  pushed: boolean;
+  prCreated: boolean;
+  prUrl: string;
+  baseBranch: string;
+  message: string;
 }
 
 interface NativeWebView {
@@ -100,7 +130,7 @@ export function listLocalRepositoryMaps(timeout = 1500): Promise<RepositoryCatal
 export async function loadLocalRepositoryMap(slug: string): Promise<RepositoryMapResponse> {
   if (hasNativeRepositoryBridge()) {
     const result = await nativeRequest<{ slug: string; files: MapSourceFiles }>('load', { slug });
-    return { slug: result.slug, project: parseMapSourceFiles(result.files), repository: '', branch: '', remote: '', changes: 0 };
+    return { slug: result.slug, project: parseMapSourceFiles(result.files) };
   }
   return repositoryRequest<RepositoryMapResponse>(`/maps/${encodeURIComponent(slug)}`);
 }
@@ -117,12 +147,25 @@ export async function saveLocalRepositoryMap(slug: string, project: WulframProje
   }, 20_000);
 }
 
-export function publishLocalRepositoryMap(slug: string): Promise<RepositoryCatalog & { committed: boolean; pushed: boolean; message: string }> {
-  if (hasNativeRepositoryBridge()) return nativeRequest('publish', { slug });
-  return repositoryRequest(`/maps/${encodeURIComponent(slug)}/publish`, { method: 'POST', body: '{}' }, 60_000);
+export function publishLocalRepositoryMap(slug: string): Promise<RepositoryPublishResult> {
+  if (hasNativeRepositoryBridge()) return nativeRequest('publish', { slug }, 120_000);
+  return repositoryRequest(`/maps/${encodeURIComponent(slug)}/publish`, { method: 'POST', body: '{}' }, 120_000);
 }
 
 export function configureLocalRepository(): Promise<RepositoryCatalog> {
   if (!hasNativeRepositoryBridge()) return Promise.reject(new Error('Repository selection is available in the desktop app.'));
   return nativeRequest('configure');
+}
+
+export function diagnoseLocalRepository(timeout = 8000): Promise<RepositoryDiagnostics> {
+  if (hasNativeRepositoryBridge()) return nativeRequest('diagnostics', {}, Math.max(timeout, 8000));
+  return repositoryRequest('/diagnostics', undefined, timeout);
+}
+
+export function switchLocalRepositoryBranch(branch: string, create = false): Promise<RepositoryCatalog> {
+  if (hasNativeRepositoryBridge()) return nativeRequest('branch', { branch, create });
+  return repositoryRequest('/branches', {
+    method: 'POST',
+    body: JSON.stringify({ branch, create }),
+  }, 20_000);
 }

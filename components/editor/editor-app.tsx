@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   CircleDot,
   Download,
+  ExternalLink,
   FileArchive,
   FileJson,
   FolderOpen,
@@ -31,17 +32,29 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
 import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
+import { heightsFromGrayscaleRgba } from '@/lib/heightmap';
 import {
   configureLocalRepository,
+  diagnoseLocalRepository,
   hasNativeRepositoryBridge,
   listLocalRepositoryMaps,
   loadLocalRepositoryMap,
   publishLocalRepositoryMap,
   saveLocalRepositoryMap,
+  switchLocalRepositoryBranch,
   type RepositoryCatalog,
+  type RepositoryDiagnostics,
 } from '@/lib/map-repository-client';
 import {
   MAP_SOURCE_FILES,
@@ -70,6 +83,7 @@ import {
   sampleHeight,
   sampleSlopeDegrees,
   snapStructureToTerrain,
+  structureTerrainClearance,
   toBaseLayout,
   usesFootprintTerrainSnap,
   validateProject,
@@ -199,7 +213,12 @@ export function EditorApp() {
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [showGrid, setShowGrid] = useState(true);
   const [cursor, setCursor] = useState<Vec3>();
-  const [heightmapRange, setHeightmapRange] = useState<[number, number]>([0, 420]);
+  const [heightmapRange, setHeightmapRange] = useState<[number, number]>([0, 180]);
+  const [heightmapGamma, setHeightmapGamma] = useState(1);
+  const [heightmapSmoothing, setHeightmapSmoothing] = useState(2);
+  const [heightmapFile, setHeightmapFile] = useState<File>();
+  const [heightmapPreviewUrl, setHeightmapPreviewUrl] = useState('');
+  const [heightmapDialogOpen, setHeightmapDialogOpen] = useState(false);
   const [undoStack, setUndoStack] = useState<WulframProject[]>([]);
   const [redoStack, setRedoStack] = useState<WulframProject[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -208,11 +227,37 @@ export function EditorApp() {
   const [repositorySlug, setRepositorySlug] = useState('');
   const [repositoryChecked, setRepositoryChecked] = useState(false);
   const [repositoryBusy, setRepositoryBusy] = useState(false);
+  const [repositoryWizardOpen, setRepositoryWizardOpen] = useState(false);
+  const [repositoryDiagnostics, setRepositoryDiagnostics] = useState<RepositoryDiagnostics>();
+  const [repositoryDiagnosticError, setRepositoryDiagnosticError] = useState('');
+  const [repositoryDiagnosticBusy, setRepositoryDiagnosticBusy] = useState(false);
+  const [repositoryBranchDraft, setRepositoryBranchDraft] = useState('');
+  const [lastPullRequestUrl, setLastPullRequestUrl] = useState('');
   const [nativeRepositoryBridge] = useState(hasNativeRepositoryBridge);
   const importRef = useRef<HTMLInputElement>(null);
   const heightmapRef = useRef<HTMLInputElement>(null);
   const strokeSnapshotRef = useRef<WulframProject | null>(null);
   const levelHeightRef = useRef(0);
+
+  useEffect(() => () => {
+    if (heightmapPreviewUrl) URL.revokeObjectURL(heightmapPreviewUrl);
+  }, [heightmapPreviewUrl]);
+
+  useEffect(() => {
+    const cancelPlacement = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape'
+        || mode !== 'base'
+        || repositoryWizardOpen
+        || heightmapDialogOpen
+        || (!selectedPlacementKey && !selectedTemplateId)) return;
+      event.preventDefault();
+      setSelectedPlacementKey('');
+      setSelectedTemplateId(undefined);
+      setNotice({ tone: 'ready', text: 'Placement tool cleared · select a unit or template to place again' });
+    };
+    window.addEventListener('keydown', cancelPlacement);
+    return () => window.removeEventListener('keydown', cancelPlacement);
+  }, [heightmapDialogOpen, mode, repositoryWizardOpen, selectedPlacementKey, selectedTemplateId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -293,6 +338,8 @@ export function EditorApp() {
     } catch (error) {
       setRepositoryCatalog(undefined);
       if (announce) {
+        setRepositoryWizardOpen(true);
+        setRepositoryDiagnosticError(error instanceof Error ? error.message : 'Local maps service is offline.');
         setNotice({
           tone: 'error',
           text: error instanceof Error ? `${error.message} Run npm run dev to enable repository access.` : 'Local maps service is offline.',
@@ -302,6 +349,24 @@ export function EditorApp() {
       setRepositoryChecked(true);
     }
   }, []);
+
+  const diagnoseRepository = useCallback(async () => {
+    try {
+      setRepositoryDiagnosticBusy(true);
+      setRepositoryDiagnosticError('');
+      setRepositoryDiagnostics(await diagnoseLocalRepository());
+    } catch (error) {
+      setRepositoryDiagnostics(undefined);
+      setRepositoryDiagnosticError(error instanceof Error ? error.message : 'The local maps service did not respond.');
+    } finally {
+      setRepositoryDiagnosticBusy(false);
+    }
+  }, []);
+
+  const openRepositoryWizard = useCallback(() => {
+    setRepositoryWizardOpen(true);
+    void diagnoseRepository();
+  }, [diagnoseRepository]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshRepository(false), 0);
@@ -316,12 +381,31 @@ export function EditorApp() {
       setRepositorySlug(catalog.maps[0]?.slug ?? '');
       setRepositoryChecked(true);
       setNotice({ tone: 'ready', text: `Using ${catalog.repository}` });
+      void diagnoseRepository();
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Repository selection failed.' });
     } finally {
       setRepositoryBusy(false);
     }
-  }, []);
+  }, [diagnoseRepository]);
+
+  const changeRepositoryBranch = useCallback(async (branch: string, create: boolean) => {
+    const normalized = branch.trim();
+    if (!normalized) return;
+    try {
+      setRepositoryBusy(true);
+      const catalog = await switchLocalRepositoryBranch(normalized, create);
+      setRepositoryCatalog(catalog);
+      setRepositorySlug((current) => catalog.maps.some((map) => map.slug === current) ? current : (catalog.maps[0]?.slug ?? ''));
+      setRepositoryBranchDraft('');
+      setNotice({ tone: 'ready', text: `${create ? 'Created and switched to' : 'Switched to'} ${catalog.branch}` });
+      void diagnoseRepository();
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Branch operation failed.' });
+    } finally {
+      setRepositoryBusy(false);
+    }
+  }, [diagnoseRepository]);
 
   useEffect(() => {
     if (!project) return;
@@ -450,8 +534,15 @@ export function EditorApp() {
     const ground = sampleHeight(project.terrain, x, y);
     const offset = placementDefault?.heightOffset ?? defaultData?.heightOffset ?? 0;
     const yaw = defaultData?.yawCircularMean ?? 0;
+    const clearance = structureTerrainClearance(
+      { token: item.token, team },
+      manifest,
+      item.footprint,
+      offset,
+      placementDefault?.snapMargin,
+    );
     const snap = usesFootprintTerrainSnap(item.token)
-      ? snapStructureToTerrain(project.terrain, x, y, item.footprint, yaw, offset, placementDefault?.snapMargin ?? 0.75)
+      ? snapStructureToTerrain(project.terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
       : undefined;
     return [{
       id: 'placement-preview-0',
@@ -542,14 +633,21 @@ export function EditorApp() {
     const turretDefault = analysis?.turretDefaults[entity.token];
     const groundOffset = placementDefault?.heightOffset ?? turretDefault?.heightOffset ?? 0;
     if (usesFootprintTerrainSnap(entity.token)) {
+      const clearance = structureTerrainClearance(
+        entity,
+        manifest,
+        item?.footprint ?? 10,
+        groundOffset,
+        placementDefault?.snapMargin,
+      );
       const snap = snapStructureToTerrain(
         terrain,
         entity.position[0],
         entity.position[1],
-        item?.footprint ?? 10,
+        clearance.footprint,
         entity.rotation[2],
-        groundOffset,
-        placementDefault?.snapMargin ?? 0.75,
+        clearance.groundOffset,
+        clearance.margin,
       );
       entity.position[2] = snap.height;
       entity.rotation[0] = snap.pitch;
@@ -557,7 +655,31 @@ export function EditorApp() {
     } else {
       entity.position[2] = sampleHeight(terrain, entity.position[0], entity.position[1]) + groundOffset;
     }
-  }, [analysis]);
+  }, [analysis, manifest]);
+
+  const resolveEntityMove = useCallback((source: StateEntity, x: number, y: number): StateEntity => {
+    if (!project) return source;
+    const moved: StateEntity = {
+      ...source,
+      position: [x, y, source.position[2]],
+      rotation: [...source.rotation],
+    };
+    conformEntityToTerrain(moved, project.terrain);
+    return moved;
+  }, [conformEntityToTerrain, project]);
+
+  const moveEntity = useCallback((id: string, x: number, y: number) => {
+    if (!project) return;
+    mutate((draft) => {
+      const entity = draft.entities.find((candidate) => candidate.id === id);
+      if (!entity) return;
+      entity.position[0] = x;
+      entity.position[1] = y;
+      conformEntityToTerrain(entity, draft.terrain);
+    });
+    setSelectedEntityId(id);
+    setNotice({ tone: 'ready', text: `Unit moved and terrain-tuned at ${x.toFixed(1)}, ${y.toFixed(1)}` });
+  }, [conformEntityToTerrain, mutate, project]);
 
   const placeUnit = useCallback((x: number, y: number) => {
     if (!project) return;
@@ -590,8 +712,15 @@ export function EditorApp() {
     const ground = sampleHeight(project.terrain, x, y);
     const offset = placementDefault?.heightOffset ?? defaultData?.heightOffset ?? 0;
     const yaw = defaultData?.yawCircularMean ?? 0;
+    const clearance = structureTerrainClearance(
+      { token: item.token, team },
+      manifest,
+      item.footprint,
+      offset,
+      placementDefault?.snapMargin,
+    );
     const snap = usesFootprintTerrainSnap(item.token)
-      ? snapStructureToTerrain(project.terrain, x, y, item.footprint, yaw, offset, placementDefault?.snapMargin ?? 0.75)
+      ? snapStructureToTerrain(project.terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
       : undefined;
     const entity: StateEntity = {
       id: createId(item.key),
@@ -615,8 +744,22 @@ export function EditorApp() {
     }, record);
   }, [mutate, selectedEntityId]);
 
-  const importHeightmap = useCallback(async (file: File) => {
+  const stageHeightmap = useCallback((file: File) => {
+    setHeightmapFile(file);
+    setHeightmapPreviewUrl(URL.createObjectURL(file));
+    setHeightmapDialogOpen(true);
+  }, []);
+
+  const closeHeightmapDialog = useCallback(() => {
+    setHeightmapDialogOpen(false);
+    setHeightmapFile(undefined);
+    setHeightmapPreviewUrl('');
+  }, []);
+
+  const importHeightmap = useCallback(async () => {
+    const file = heightmapFile;
     if (!project) return;
+    if (!file) return;
     try {
       setNotice({ tone: 'working', text: `Reading grayscale heightmap ${file.name}…` });
       const bitmap = await createImageBitmap(file);
@@ -625,30 +768,34 @@ export function EditorApp() {
       canvas.height = project.terrain.height;
       const context = canvas.getContext('2d', { willReadFrequently: true });
       if (!context) throw new Error('Canvas image decoding is unavailable.');
+      context.imageSmoothingEnabled = false;
       context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
       const [minimum, maximum] = heightmapRange;
-      const heights: number[] = [];
-      for (let index = 0; index < pixels.length; index += 4) {
-        const luminance = (pixels[index] * 0.2126 + pixels[index + 1] * 0.7152 + pixels[index + 2] * 0.0722) / 255;
-        heights.push(minimum + luminance * (maximum - minimum));
-      }
+      const heights = heightsFromGrayscaleRgba(pixels, canvas.width, canvas.height, {
+        minimum,
+        maximum,
+        gamma: heightmapGamma,
+        smoothingPasses: heightmapSmoothing,
+      });
       bitmap.close();
       mutate((draft) => { draft.terrain.heights = heights; });
       setMode('terrain');
       setTerrainTool('sculpt');
-      setNotice({ tone: 'ready', text: `Heightmap applied at ${minimum}–${maximum} world units` });
+      closeHeightmapDialog();
+      setNotice({ tone: 'ready', text: `Heightmap applied at ${minimum}–${maximum} units with ${heightmapSmoothing} smoothing pass${heightmapSmoothing === 1 ? '' : 'es'}` });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Heightmap import failed.' });
     }
-  }, [heightmapRange, mutate, project]);
+  }, [closeHeightmapDialog, heightmapFile, heightmapGamma, heightmapRange, heightmapSmoothing, mutate, project]);
 
   const importFiles = async (files: File[]) => {
     if (!files.length || !project) return;
     try {
       setNotice({ tone: 'working', text: `Importing ${files.length === 1 ? files[0].name : `${files.length} map files`}…` });
       if (files.length === 1 && files[0].type.startsWith('image/')) {
-        await importHeightmap(files[0]);
+        stageHeightmap(files[0]);
+        setNotice({ tone: 'ready', text: 'Adjust the grayscale height controls, then apply the image' });
         return;
       }
       let landText: string | undefined;
@@ -699,6 +846,8 @@ export function EditorApp() {
       if (sourceProject) {
         pushHistory(cloneProject(project));
         setProject(sourceProject);
+        setRepositorySlug('');
+        setLastPullRequestUrl('');
         setDirty(true);
         setSelectedEntityId(undefined);
         setNotice({ tone: 'ready', text: `Git map source ${sourceProject.name} imported` });
@@ -709,7 +858,10 @@ export function EditorApp() {
         const restored = jsonValue as WulframProject;
         pushHistory(cloneProject(project));
         setProject(restored);
+        setRepositorySlug('');
+        setLastPullRequestUrl('');
         setDirty(true);
+        setSelectedEntityId(undefined);
         setNotice({ tone: 'ready', text: `Project ${restored.name} imported` });
         return;
       }
@@ -733,6 +885,8 @@ export function EditorApp() {
         }
         if (importedName) draft.name = importedName;
       });
+      setRepositorySlug('');
+      setLastPullRequestUrl('');
       setSelectedEntityId(undefined);
       setNotice({ tone: 'ready', text: 'Map files imported and ready to edit' });
     } catch (error) {
@@ -808,7 +962,11 @@ export function EditorApp() {
   const saveRepositorySelection = useCallback(async (publish: boolean) => {
     if (!project) return;
     const slug = repositorySlug || safeMapName(project.name);
-    if (publish && !window.confirm(`Commit and push ${project.name} to blackwatergaming/wulfram-maps?`)) return;
+    if (publish && !window.confirm(
+      repositoryCatalog?.branch === repositoryCatalog?.defaultBranch
+        ? `Save ${project.name}, create a feature branch, commit it, push it, and open a pull request into main?`
+        : `Save ${project.name}, commit it on ${repositoryCatalog?.branch}, push it, and open or update its pull request into main?`,
+    )) return;
     try {
       setRepositoryBusy(true);
       setNotice({ tone: 'working', text: publish ? `Saving and publishing ${slug}…` : `Saving ${slug} as Git map source…` });
@@ -818,6 +976,8 @@ export function EditorApp() {
       setDirty(false);
       if (publish) {
         const result = await publishLocalRepositoryMap(slug);
+        setLastPullRequestUrl(result.prUrl);
+        setRepositoryCatalog(result);
         setNotice({ tone: 'ready', text: result.message });
       } else {
         setNotice({ tone: 'ready', text: `${saved.project.name} saved to maps/${slug}` });
@@ -828,7 +988,7 @@ export function EditorApp() {
     } finally {
       setRepositoryBusy(false);
     }
-  }, [project, refreshRepository, repositorySlug]);
+  }, [project, refreshRepository, repositoryCatalog?.branch, repositoryCatalog?.defaultBranch, repositorySlug]);
 
   const newMap = useCallback(() => {
     if (dirty && !window.confirm('Start a new map? Your current project is autosaved locally, but unexported changes will leave the canvas.')) return;
@@ -845,6 +1005,8 @@ export function EditorApp() {
     }
     if (project) pushHistory(cloneProject(project));
     setProject(blank);
+    setRepositorySlug('');
+    setLastPullRequestUrl('');
     setRedoStack([]);
     setSelectedEntityId(undefined);
     setMode('terrain');
@@ -890,12 +1052,136 @@ export function EditorApp() {
         className="sr-only"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) void importHeightmap(file);
+          if (file) stageHeightmap(file);
           event.target.value = '';
         }}
         ref={heightmapRef}
         type="file"
       />
+
+      <Dialog onOpenChange={setRepositoryWizardOpen} open={repositoryWizardOpen}>
+        <DialogContent className="repository-wizard">
+          <DialogHeader>
+            <DialogTitle>Maps repository setup</DialogTitle>
+            <DialogDescription>
+              Diagnose the local checkout, choose a working branch, and publish map commits as pull requests into <code>main</code>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <section className="repository-wizard-summary">
+            <div className={repositoryDiagnosticError ? 'diagnostic-row fail' : 'diagnostic-row pass'}>
+              {repositoryDiagnosticError ? <AlertTriangle /> : <CheckCircle2 />}
+              <span>
+                <strong>{nativeRepositoryBridge ? 'Desktop repository bridge' : 'Loopback maps service'}</strong>
+                <small>{repositoryDiagnosticError || (repositoryDiagnostics ? `${repositoryDiagnostics.service} is responding.` : 'Run diagnostics to check the connection.')}</small>
+              </span>
+            </div>
+            {repositoryDiagnostics?.checks.map((check) => (
+              <div className={`diagnostic-row ${check.status}`} key={check.id}>
+                {check.status === 'fail' ? <AlertTriangle /> : check.status === 'warn' ? <CircleDot /> : <CheckCircle2 />}
+                <span>
+                  <strong>{check.label}</strong>
+                  <small>{check.detail}</small>
+                  {check.fix && check.status !== 'pass' && <code>{check.fix}</code>}
+                </span>
+              </div>
+            ))}
+          </section>
+
+          {repositoryCatalog && (
+            <section className="repository-branch-panel">
+              <div>
+                <span>WORKING BRANCH</span>
+                <strong>{repositoryCatalog.branch}</strong>
+              </div>
+              <label>
+                Switch branch
+                <select
+                  disabled={repositoryBusy}
+                  onChange={(event) => void changeRepositoryBranch(event.target.value, false)}
+                  value={repositoryCatalog.branch}
+                >
+                  {repositoryCatalog.branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                </select>
+              </label>
+              <label>
+                Create feature branch
+                <span>
+                  <input
+                    onChange={(event) => setRepositoryBranchDraft(event.target.value)}
+                    placeholder="maps/my-layout"
+                    value={repositoryBranchDraft}
+                  />
+                  <button
+                    disabled={repositoryBusy || !repositoryBranchDraft.trim()}
+                    onClick={() => void changeRepositoryBranch(repositoryBranchDraft, true)}
+                    type="button"
+                  >Create</button>
+                </span>
+              </label>
+              <p>Publishing from <code>main</code> automatically creates a timestamped feature branch. Publishing from another branch commits there and opens or updates its PR into <code>main</code>.</p>
+            </section>
+          )}
+
+          <section className="repository-start-help">
+            <strong>{nativeRepositoryBridge ? 'Checkout discovery' : 'Start the browser companion'}</strong>
+            {nativeRepositoryBridge ? (
+              <>
+                <p>Choose the local <code>blackwatergaming/wulfram-maps</code> Git checkout if automatic discovery picked the wrong folder.</p>
+                <button disabled={repositoryBusy} onClick={() => void configureRepository()} type="button"><FolderOpen /> Choose maps checkout</button>
+              </>
+            ) : (
+              <>
+                <p>Run one of these from the editor checkout, then retry. The service listens on loopback only.</p>
+                <code>npm run dev</code>
+                <code>npm run maps:serve</code>
+                <code>$env:WULFRAM_MAPS_REPO=&apos;C:&#92;path&#92;to&#92;wulfram-maps&apos;</code>
+                <small>Diagnostic endpoint: http://127.0.0.1:4319/diagnostics</small>
+              </>
+            )}
+          </section>
+
+          <DialogFooter className="repository-wizard-footer">
+            <Button onClick={() => setRepositoryWizardOpen(false)} variant="outline">Done</Button>
+            <Button disabled={repositoryDiagnosticBusy} onClick={() => void diagnoseRepository()}>
+              <RefreshCw /> {repositoryDiagnosticBusy ? 'Checking…' : 'Retry diagnostics'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog onOpenChange={(open) => { if (!open) closeHeightmapDialog(); }} open={heightmapDialogOpen}>
+        <DialogContent className="heightmap-dialog">
+          <DialogHeader>
+            <DialogTitle>Import grayscale heightmap</DialogTitle>
+            <DialogDescription>
+              Black maps to the minimum height and white maps to the maximum. Use smoothing to soften isolated image spikes before changing the terrain.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="heightmap-preview">
+            {heightmapPreviewUrl && <img alt="Selected grayscale heightmap" src={heightmapPreviewUrl} />}
+            <span>{heightmapFile?.name}</span>
+          </div>
+          <div className="heightmap-control-grid">
+            <NumberField label="Minimum (black)" max={5000} min={-5000} onChange={(value) => setHeightmapRange(([_, maximum]) => [value, maximum])} value={heightmapRange[0]} />
+            <NumberField label="Maximum (white)" max={5000} min={-5000} onChange={(value) => setHeightmapRange(([minimum]) => [minimum, value])} value={heightmapRange[1]} />
+          </div>
+          <div className="heightmap-curves">
+            <RangeField label="Spike smoothing" max={6} min={0} onChange={setHeightmapSmoothing} step={1} suffix=" passes" value={heightmapSmoothing} />
+            <RangeField label="Midtone curve" max={2.5} min={0.35} onChange={setHeightmapGamma} step={0.05} suffix="×" value={heightmapGamma} />
+          </div>
+          <div className="heightmap-presets">
+            <button onClick={() => { setHeightmapRange([0, 120]); setHeightmapSmoothing(3); setHeightmapGamma(1); }} type="button">Gentle 0–120</button>
+            <button onClick={() => { setHeightmapRange([0, 240]); setHeightmapSmoothing(2); setHeightmapGamma(1); }} type="button">Medium 0–240</button>
+            <button onClick={() => { setHeightmapRange([0, 420]); setHeightmapSmoothing(0); setHeightmapGamma(1); }} type="button">Raw 0–420</button>
+          </div>
+          <p className="heightmap-note">Image resizing uses exact nearest-pixel sampling. Smoothing is an explicit terrain-height pass and can be set to zero.</p>
+          <DialogFooter>
+            <Button onClick={closeHeightmapDialog} variant="outline">Cancel</Button>
+            <Button disabled={!heightmapFile} onClick={() => void importHeightmap()}><ImageIcon /> Apply heightmap</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <header className="topbar">
         <button className="brand-lockup" onClick={() => window.open('https://github.com/blackwatergaming/wulfram-mapeditor', '_blank')} type="button">
@@ -1015,7 +1301,7 @@ export function EditorApp() {
                     <div className="rotation-presets template-rotation-presets">
                       {[0, 90, 180, 270].map((degrees) => <button key={degrees} onClick={() => setTemplateYaw(degrees)} type="button">{degrees}°</button>)}
                     </div>
-                    <p className="field-help">Click the terrain to place. The footprint auto-fits map bounds; pads, cells, missile launchers, and skypumps align and clear their full slope footprint.</p>
+                    <p className="field-help">Click terrain to place. Every surviving model clears its full rendered underside and slope footprint. Shift-drag an existing unit to pick it up and retune it.</p>
                   </div>
                 )}
               </section>
@@ -1067,11 +1353,11 @@ export function EditorApp() {
                 <option value="">{repositoryCatalog ? 'New repository map…' : repositoryChecked ? 'Maps service offline' : 'Checking maps…'}</option>
                 {repositoryCatalog?.maps.map((map) => <option key={map.slug} value={map.slug}>{map.name} · {map.slug}</option>)}
               </select>
-              {nativeRepositoryBridge && <button aria-label="Choose maps repository" disabled={repositoryBusy} onClick={() => void configureRepository()} title="Choose the local wulfram-maps checkout" type="button"><Settings2 /></button>}
+              <button aria-label="Repository setup and diagnostics" disabled={repositoryBusy} onClick={openRepositoryWizard} title="Repository setup, branches, and diagnostics" type="button"><Settings2 /></button>
               <button aria-label="Refresh repository maps" disabled={repositoryBusy} onClick={() => void refreshRepository(true)} title="Refresh repository maps" type="button"><RefreshCw /></button>
               <button disabled={!repositoryCatalog || !repositorySlug || repositoryBusy} onClick={() => void loadRepositorySelection()} title="Load selected Git source" type="button"><FolderOpen /><span>Load</span></button>
               <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(false)} title="Save canonical source to the local maps checkout" type="button"><Save /><span>Save</span></button>
-              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(true)} title="Save, commit, and push this map" type="button"><Upload /><span>Publish</span></button>
+              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(true)} title="Save, commit to a feature branch, push, and open a PR into main" type="button"><Upload /><span>Publish PR</span></button>
             </div>
             <div className="stage-stats">
               <span>{project.terrain.width} × {project.terrain.height}</span>
@@ -1087,7 +1373,9 @@ export function EditorApp() {
             manifest={manifest}
             mode={mode}
             onCursor={setCursor}
+            onMoveEntity={moveEntity}
             onPlace={placeUnit}
+            resolveEntityMove={resolveEntityMove}
             onSelectEntity={setSelectedEntityId}
             onTerrainStroke={onTerrainStroke}
             placementPreview={placementPreview}
@@ -1102,6 +1390,7 @@ export function EditorApp() {
           />
           <footer className={`statusbar ${notice.tone}`}>
             <span>{notice.tone === 'error' ? <AlertTriangle /> : notice.tone === 'working' ? <CircleDot /> : <CheckCircle2 />}{notice.text}</span>
+            {lastPullRequestUrl && <a className="pull-request-link" href={lastPullRequestUrl} rel="noreferrer" target="_blank">Open PR <ExternalLink /></a>}
             {cursor && <span className="cursor-position">X {cursor[0].toFixed(1)} · Y {cursor[1].toFixed(1)} · Z {cursor[2].toFixed(1)}</span>}
             <span className="format-state">GIT SOURCE + WULFRAM PACKAGE</span>
           </footer>
@@ -1130,10 +1419,14 @@ export function EditorApp() {
                 </section>
               )}
               <section className="inspector-block">
-                <p className="section-label">GRAYSCALE IMPORT RANGE</p>
+                <p className="section-label">GRAYSCALE IMAGE CONTROLS</p>
                 <div className="number-grid two">
-                  <NumberField label="Black" onChange={(value) => setHeightmapRange(([_, maximum]) => [value, maximum])} value={heightmapRange[0]} />
-                  <NumberField label="White" onChange={(value) => setHeightmapRange(([minimum]) => [minimum, value])} value={heightmapRange[1]} />
+                  <NumberField label="Min / black" onChange={(value) => setHeightmapRange(([_, maximum]) => [value, maximum])} value={heightmapRange[0]} />
+                  <NumberField label="Max / white" onChange={(value) => setHeightmapRange(([minimum]) => [minimum, value])} value={heightmapRange[1]} />
+                </div>
+                <div className="heightmap-inline-controls">
+                  <RangeField label="Smoothing" max={6} min={0} onChange={setHeightmapSmoothing} step={1} value={heightmapSmoothing} />
+                  <RangeField label="Midtone" max={2.5} min={0.35} onChange={setHeightmapGamma} step={0.05} suffix="×" value={heightmapGamma} />
                 </div>
                 <button className="secondary-action" onClick={() => heightmapRef.current?.click()} type="button"><ImageIcon /> Choose heightmap</button>
               </section>

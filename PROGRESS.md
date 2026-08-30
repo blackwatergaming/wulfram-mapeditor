@@ -5,7 +5,7 @@ Updated: 2026-08-30
 ## Completed
 
 - [x] Confirmed the target GitHub repository exists and is empty.
-- [x] Scaffolded the browser application with the Sites/React toolchain.
+- [x] Scaffolded the browser application with the React/Vite toolchain.
 - [x] Located the original terrain, map state, bitmap, and shape archives in `../wulfram-debug`.
 - [x] Decode the original `land` and `state` formats and derive placement defaults from shipped maps.
 - [x] Extract and convert the original textures and models into browser-ready assets.
@@ -34,6 +34,20 @@ Updated: 2026-08-30
 - [x] Add live terrain-conformed original-model ghosts for single-unit and whole-template placement.
 - [x] Remove the artificial camera close-zoom distance floor.
 - [x] Remove the ChatGPT Sites hosting manifest/plugin so builds and publication remain local or GitHub-based.
+- [x] Replace catalog-only snapping with extracted model-bounds clearance for every surviving placeable model, sample terrain-grid peaks, and retain a 1.25-unit underside margin.
+- [x] Add a maps-service setup/diagnostics wizard plus `maps:doctor` for checkout, Git, GitHub CLI/authentication, origin, `main`, branch, and worktree checks.
+- [x] Add branch creation/switching and make Publish create or reuse feature-branch commits and pull requests targeting `main`.
+- [x] Add Shift-drag pickup for selected units with live terrain-conformed position/tilt preview and a single undoable commit on release.
+- [x] Add grayscale import preview controls for minimum/maximum heights, gamma, and optional Gaussian spike smoothing, plus gentle/medium/raw presets.
+- [x] Add `BUILD.md` with browser, self-contained desktop, research/debug, headed measurement, map PR, and release procedures.
+- [x] Make Escape clear active unit/template placement and its cursor preview without discarding the selected placed unit.
+- [x] Remove cargo variants for model-less deployables from new placement and templates while retaining legacy-row import/export.
+- [x] Complete headed WebView2 verification of repository setup, placement preview, Shift-drag, Escape, grayscale controls, texture decoding, DPI layout, and camera performance.
+- [x] Clear the previous repository slug when creating or importing a different map so Save cannot overwrite the formerly selected map.
+
+## In progress
+
+- [ ] Publish and verify the tagged v0.3.0 self-contained desktop release.
 
 ## Findings
 
@@ -52,10 +66,10 @@ Updated: 2026-08-30
 - Powered connected-component analysis found 73 reusable bases across 19 shipped maps, containing 832 original units. Nearby cargo, uplinks, and supply ships attach only to their nearest base, avoiding duplication.
 - Template tests match all 832 units back to their source state rows and source terrain heights, then verify team remapping, rotation, footprint auto-fit, bounds clamping, and destination-terrain conformance.
 - Terrain material rendering now keeps original categorical texture IDs on disk while producing normalized, adjustable transitions in the viewport; the paint brush uses deterministic feathering so repeated strokes remain stable. Texture texels use strict nearest-neighbor sampling with smoothing and mipmaps disabled, preserving the source pixels.
-- State-file medians provide footprint-snap origin clearances of 2.983 units (power cell), 3.853 (repair pad), 3.200 (missile launcher), and 4.528 (skypump). A 0.75-unit safety margin is added after fitting the footprint plane and clearing its highest terrain residual.
+- State-file medians provide legacy origin offsets of 2.983 units (power cell), 2.742 (refuel pad), 3.853 (repair pad), 3.200 (missile launcher), and 4.528 (skypump). New placement takes the larger of that offset and the extracted rendered-model underside, scans the full model-bounds footprint plus covered terrain vertices, and retains a 1.25-unit bottom margin.
 - Ghidra confirms the original client samples averaged terrain normals over a square radius (`TerrainNormal_SampleAroundPoint`) and raises map-editor objects by their model height above sampled terrain (`MapEdit_PlaceSelectedObject`). The browser implementation extends that behavior with full-footprint clearance to prevent corner clipping.
 - The live viewport now renders on invalidation instead of continuously, reuses static shadow maps while the camera moves, caps pixel density at 1.5×, raycasts only terrain during pointer motion, and coalesces high-frequency pointer events to animation frames.
-- A local 600,000-pixel blend-loop microbenchmark dropped from 338.8 ms with per-pixel contribution allocations to 69.5 ms with the reusable weight buffer (4.88× faster); headed end-to-end frame timing remains pending below.
+- A local 600,000-pixel blend-loop microbenchmark dropped from 338.8 ms with per-pixel contribution allocations to 69.5 ms with the reusable weight buffer (4.88× faster); headed WebView2 timing subsequently held 59–60 FPS in the tested idle, preview, and camera-motion paths.
 - Shipped models exist for power, refuel, repair, gun, flak, missile launcher, skypump, darklight, uplink, and cargo. Shield, heavy silo, portal, spy bug, and template-only supply ships remain readable from legacy maps but are omitted from new placement.
 - Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
@@ -64,9 +78,13 @@ Updated: 2026-08-30
 - `blackwatergaming/wulfram-maps` now contains 47 canonical map directories on `main`; release v0.1.0 contains 47 map packages, one collection archive, and `SHA256SUMS.txt`.
 - The loopback service returned all 47 maps and loaded Crossroads with 16,641 terrain vertices and 69 entities; the editor route returned HTTP 200.
 - A headed Edge WebView2 run at Windows 200% scaling reported a 1280×730 CSS viewport at DPR 2 with no document overflow. Idle, nine-model template-preview, and active keyboard-camera timing held 59–60 FPS.
+- The final v0.3.0 headed probe also passed repository diagnostics, a nine-unit model preview, Shift-drag terrain tuning, Escape cancellation, and grayscale preview/application; all texture requests decoded and no console, runtime, or network failures were reported.
 - WebView2 texture requests and canvas pixel reads succeeded. Pre-sizing the 903×903 terrain atlas before its first GPU upload removed `glCopySubTextureCHROMIUM` overflow warnings and restored the original blended texture view.
 - The desktop template placement probe selected a nine-unit shipped base, rendered its live preview badge and translucent terrain-conformed models, and completed without console or network errors.
 - The native repository bridge exposed 47 maps (plus the new-map option) and loaded `aberdour` from canonical Git source into the packaged desktop editor.
+- Repository workflow tests now create real temporary Git checkouts and bare remotes, then verify feature-branch naming, selected-map-only commits, pushes, PR metadata targeting `main`, branch switching, unrelated-change refusal, and the loopback health/diagnostics/catalog/branch endpoints.
+- `npm run maps:doctor` passes against the actual sibling checkout for Git, GitHub CLI authentication, the `blackwatergaming/wulfram-maps` origin, and `main`; being on `main` is intentionally reported as a warning because Publish creates a feature branch automatically.
+- The local v0.3.0 self-contained archive is 66,745,181 bytes with SHA-256 `1098545b3677464b5bb70fad474a46cd3c29d771f2c6d937270429f8affe736b`.
 
 ## Notes
 

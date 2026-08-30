@@ -9,6 +9,7 @@ import { createDesktopAssets } from './create-desktop-assets.mjs';
 
 const ARCHIVE_DATE = new Date('2000-01-01T00:00:00.000Z');
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageVersion = JSON.parse(fs.readFileSync(path.join(workspace, 'package.json'), 'utf8')).version;
 
 function run(executable, args) {
   const result = spawnSync(executable, args, { cwd: workspace, stdio: 'inherit' });
@@ -44,8 +45,8 @@ function addDirectory(zip, source, prefix) {
 
 async function main() {
   const versionOption = process.argv.indexOf('--version');
-  const version = versionOption >= 0 ? process.argv[versionOption + 1] : '0.2.0';
-  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Use --version with a semantic version such as 0.2.0.');
+  const version = versionOption >= 0 ? process.argv[versionOption + 1] : packageVersion;
+  if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Use --version with a semantic version such as 0.3.0.');
 
   run(process.execPath, [path.join(workspace, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.desktop.config.ts']);
   await createDesktopAssets();

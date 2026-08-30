@@ -445,10 +445,16 @@ def analyze_maps() -> dict:
     analyzed_files = 0
     powered_tokens = {"f", "r", "s", "g", "E", "L", "o"}
     footprint_snap_labels = {
+        "c": "Cargo Box",
+        "d": "Darklight",
         "e": "Power Cell",
+        "f": "Refuel Pad",
+        "g": "Gun Turret",
         "r": "Repair Pad",
+        "s": "Flak Turret",
         "L": "Missile Launcher",
         "p": "Skypump",
+        "u": "Uplink",
     }
 
     for state_path in state_paths:
@@ -469,7 +475,7 @@ def analyze_maps() -> dict:
                 continue
             if token in {"g", "s"}:
                 rotations[token].append([normalize_angle(value) for value in record["rotation"]])
-            if token in footprint_snap_labels or token in {"g", "s"}:
+            if token in footprint_snap_labels:
                 ground = sample_terrain_height(land, record["position"][0], record["position"][1])
                 offset = record["position"][2] - ground
                 if abs(offset) < 80:
@@ -519,8 +525,8 @@ def analyze_maps() -> dict:
             "name": label,
             "sampleCount": len(offsets[token]),
             "heightOffset": round(statistics.median(offsets[token]), 3) if offsets[token] else 0,
-            "snapMargin": 0.75,
-            "method": "3x3 footprint plane, highest residual clearance, then safety margin",
+            "snapMargin": 1.25,
+            "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin",
         }
         for token, label in footprint_snap_labels.items()
     }

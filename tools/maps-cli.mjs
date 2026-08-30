@@ -21,9 +21,11 @@ import {
   compileRepository,
   listRepositoryMaps,
   publishRepositoryMaps,
+  repositoryDiagnostics,
   resolveMapsRepository,
   runGit,
   saveRepositoryMap,
+  switchRepositoryBranch,
 } from './map-repository-lib.mjs';
 
 function usage() {
@@ -34,6 +36,8 @@ Usage:
   npm run maps:import -- <source.zip|source-directory|project.json> [slug]
   npm run maps:seed-original -- [original-maps-directory]
   npm run maps:compile -- [slug ...|--all] [--out <directory>]
+  npm run maps:doctor
+  npm run maps:branch -- <branch> [--create]
   npm run maps:publish -- [slug ...|--all]
   npm run maps:release -- <tag>
 
@@ -182,6 +186,9 @@ async function main() {
   const allIndex = args.indexOf('--all');
   const all = allIndex >= 0;
   if (all) args.splice(allIndex, 1);
+  const createIndex = args.indexOf('--create');
+  const create = createIndex >= 0;
+  if (create) args.splice(createIndex, 1);
 
   if (!command || command === 'help' || command === '--help') {
     usage();
@@ -203,6 +210,26 @@ async function main() {
         updated: updatedAt,
       })),
     );
+    return;
+  }
+
+  if (command === 'doctor') {
+    if (args.length || all || create) throw new Error('maps:doctor does not accept positional arguments.');
+    const result = repositoryDiagnostics(repository);
+    console.log(`Maps checkout: ${result.repository}`);
+    for (const check of result.checks) {
+      console.log(`${check.status.toUpperCase().padEnd(4)}  ${check.label}: ${check.detail}`);
+      if (check.fix && check.status !== 'pass') console.log(`      ${check.fix}`);
+    }
+    if (!result.ok) throw new Error('Maps repository setup needs attention; follow the fixes above.');
+    return;
+  }
+
+  if (command === 'branch') {
+    const branch = args.shift();
+    if (!branch || args.length || all) throw new Error('maps:branch requires one branch name and optional --create.');
+    const result = switchRepositoryBranch(repository, branch, create);
+    console.log(`Using ${result.branch}.`);
     return;
   }
 

@@ -8,19 +8,19 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 - Terrain mode with raise, lower, level, smooth, and original-texture paint brushes. Painting uses stable edge feathering, while the viewport performs normalized multi-texture blending with an adjustable transition width and strict nearest-neighbor texel sampling.
 - Event-driven 3D rendering with static shadow reuse, frame-coalesced pointer sampling, allocation-free blend weights, and independent terrain/texture/unit update paths.
 - Full keyboard camera control: `WASD` pans, arrow keys turn and tilt, `Q`/`E` or `+`/`-` zoom, and `Home` resets the view. Right-drag orbits and the mouse wheel zooms, with no artificial close-zoom limit.
-- Grayscale image import, resampled into the active terrain grid with configurable black/white heights.
-- Base Builder mode with team placement, original models where shipped, rotation/position editing, cargo subtypes, and uplinks. A translucent, terrain-conformed model ghost follows the cursor for individual units and complete templates before placement.
+- Grayscale image import with a preview, explicit minimum/maximum heights, midtone curve, and 0–6 spike-smoothing passes. Image resampling remains nearest-pixel and smoothing can be disabled.
+- Base Builder mode with team placement, original models where shipped, rotation/position editing, Shift-drag pickup/movement, cargo subtypes, and uplinks. A translucent, terrain-conformed model ghost follows the cursor for individual units and complete templates before placement; moved units retune their height and tilt continuously against terrain.
 - A 73-template shipped-base library extracted from powered formations across 19 maps, with a live 2D top-down layout preview. Whole bases can be remapped to Team 1, Team 2, or capturable Neutral, rotated, footprint-scaled, auto-fit inside map bounds, and terrain-conformed unit by unit.
-- Repair pads, power cells, missile launchers, and skypumps fit a 3 × 3 plane across their whole footprint, inherit slope pitch/roll, then lift to the highest contact plus a 0.75-unit margin to prevent clipping.
-- The build catalog and template placer are asset-authoritative: removed unit types without a shipped model cannot be newly placed, while legacy map rows remain importable for lossless editing.
+- Every surviving placeable model—including pads, turrets, power cells, skypumps, uplinks, darklights, and cargo—fits a plane across its rendered bounds, includes covered terrain-grid peaks, inherits slope pitch/roll, and keeps a 1.25-unit margin under the complete model underside.
+- The build catalog and template placer are asset-authoritative: removed unit types and their now-undeployable cargo variants cannot be newly placed, while legacy map rows remain importable for lossless editing.
 - Placement validation for bounds, slope, spacing, ground height, power coverage, primary-cell overlap, and backup-cell areas.
 - Original `land`, `state`, `tagmap`, and `tagmap2` import/export.
 - `wulfram-base-layout` JSON v1 import/export, included in every map ZIP with an editor project backup.
 - Canonical Git source import/export using `map.json`, `terrain.tsv`, `entities.jsonl`, and the two tag maps. All 47 shipped maps are available in [`blackwatergaming/wulfram-maps`](https://github.com/blackwatergaming/wulfram-maps).
-- Repository dropdown/load/save/publish controls backed by a loopback-only local service in browser mode and a native bridge in the desktop app.
+- Repository dropdown/load/save/publish controls backed by a loopback-only local service in browser mode and a native bridge in the desktop app. A setup wizard diagnoses Git/GitHub/checkout issues, manages branches, and publishes commits through pull requests into `main`.
 - A self-contained Windows x64 Edge WebView2 app with per-monitor DPI handling, responsive high-DPI controls, and embedded editor/assets. See [the desktop release guide](docs/DESKTOP_RELEASE.md).
 
-Download [Wulfram Forge v0.2.0](https://github.com/blackwatergaming/wulfram-mapeditor/releases/tag/v0.2.0), extract the ZIP, and run `WulframForge/WulframForge.exe`. Node.js and a local web server are not required for the desktop build.
+Download [Wulfram Forge v0.3.0](https://github.com/blackwatergaming/wulfram-mapeditor/releases/tag/v0.3.0), extract the ZIP, and run `WulframForge/WulframForge.exe`. Node.js and a local web server are not required for the desktop build.
 
 The built-in Crossroads sample is read directly from the shipped map data. Gun and flak placement defaults come from robust statistics over 390 shipped turret records. The original client’s placement routines and checkerboard triangle interpolation were checked in Ghidra: rotations are radians, median gun/flak ground offsets are 16.420/15.847 world units, and power thresholds use `backupRadius - 10`, `2 × serviceRadius + 10`, and `serviceRadius - 10`. Power radii are server-supplied at runtime, so the editor exposes and stores them rather than pretending they are executable constants.
 
@@ -33,7 +33,7 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-`npm run dev` also starts the maps service on `127.0.0.1:4319`. Put a `wulfram-maps` checkout beside this repository to populate the editor's repository dropdown.
+`npm run dev` also starts the maps service on `127.0.0.1:4319`. Put a `wulfram-maps` checkout beside this repository to populate the editor's repository dropdown. Run `npm run maps:doctor` or open the editor's repository setup button for detailed service, checkout, Git, GitHub authentication, remote, and branch diagnostics.
 
 Verification:
 
@@ -44,7 +44,7 @@ npm run verify:formats
 npm run build
 ```
 
-`npm test` discovers every original map under `../wulfram-debug/data/maps` (or `WULFRAM_MAPS_DIR`), then runs each through the actual editor writers and ZIP packager. It reloads the generated files and compares terrain dimensions, every height and texture index, tag maps, unit order/types, cargo subtypes, teams, positions, rotations, active flags, JSON layout, and browser backup. It also matches all extracted template units back to their source state rows and tests terrain fitting plus normalized texture-blend weights. The checked-in Crossroads map is used as a portable fallback when the sibling asset tree is unavailable.
+`npm test` discovers every original map under `../wulfram-debug/data/maps` (or `WULFRAM_MAPS_DIR`), then runs each through the actual editor writers and ZIP packager. It reloads the generated files and compares terrain dimensions, every height and texture index, tag maps, unit order/types, cargo subtypes, teams, positions, rotations, active flags, JSON layout, and browser backup. It also matches all extracted template units back to their source state rows, tests model-bounds terrain fitting, grayscale shaping/smoothing, normalized texture blending, and the branch/commit/push/PR lifecycle against temporary Git remotes. The checked-in Crossroads map is used as a portable fallback when the sibling asset tree is unavailable.
 
 ## Asset extraction
 

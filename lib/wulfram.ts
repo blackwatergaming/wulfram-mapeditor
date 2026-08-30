@@ -114,6 +114,14 @@ export interface TerrainSnapResult {
   safetyLift: number;
 }
 
+export interface StructureTerrainClearance {
+  footprint: number;
+  groundOffset: number;
+  margin: number;
+  modelBottom: number;
+  modelName?: string;
+}
+
 export interface ShapeModel {
   name: string;
   materials: string[];
@@ -209,6 +217,12 @@ export const DEFAULT_VALIDATION: ValidationSettings = {
   maxSlopeDegrees: 22,
   minSpacing: 8,
 };
+
+/** The extracted .shape coordinates are rendered at this world-unit scale. */
+export const MODEL_WORLD_SCALE = 2.1;
+
+/** Visible air gap retained below terrain-conformed structures. */
+export const STRUCTURE_BOTTOM_MARGIN = 1.25;
 
 export function createId(prefix = 'unit'): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -369,11 +383,49 @@ export function sampleSlopeDegrees(terrain: TerrainData, worldX: number, worldY:
 }
 
 export function usesFootprintTerrainSnap(token: string): boolean {
-  return token === 'e' || token === 'r' || token === 'L' || token === 'p';
+  return token === 'e'
+    || token === 'f'
+    || token === 'r'
+    || token === 's'
+    || token === 'g'
+    || token === 'L'
+    || token === 'p'
+    || token === 'd'
+    || token === 'u'
+    || token === 'c';
 }
 
 /**
- * Fits a plane to a structure-sized 3 × 3 terrain footprint, aligns the
+ * Expands legacy placement defaults to the actual rendered model bounds. Some
+ * pad models are much wider and extend farther below their origin than their
+ * old catalog footprint suggests, which otherwise lets their edges clip.
+ */
+export function structureTerrainClearance(
+  entity: Pick<StateEntity, 'token' | 'team'>,
+  manifest: AssetManifest | undefined,
+  requestedFootprint: number,
+  requestedGroundOffset: number,
+  requestedMargin = 0.75,
+): StructureTerrainClearance {
+  const name = modelNameFor(entity);
+  const bounds = name ? manifest?.models[name]?.bounds : undefined;
+  const modelWidth = bounds ? Math.max(0, bounds.max[0] - bounds.min[0]) * MODEL_WORLD_SCALE : 0;
+  const modelDepth = bounds ? Math.max(0, bounds.max[1] - bounds.min[1]) * MODEL_WORLD_SCALE : 0;
+  const modelBottom = bounds ? Math.max(0, -bounds.min[2] * MODEL_WORLD_SCALE) : 0;
+  const footprint = Number.isFinite(requestedFootprint) ? Math.abs(requestedFootprint) : 0;
+  const groundOffset = Number.isFinite(requestedGroundOffset) ? requestedGroundOffset : 0;
+  const margin = Number.isFinite(requestedMargin) ? requestedMargin : 0;
+  return {
+    footprint: Math.max(0.5, footprint, modelWidth, modelDepth),
+    groundOffset: Math.max(groundOffset, modelBottom),
+    margin: Math.max(STRUCTURE_BOTTOM_MARGIN, margin),
+    modelBottom,
+    modelName: bounds ? name : undefined,
+  };
+}
+
+/**
+ * Fits a plane to dense samples across a structure-sized terrain footprint, aligns the
  * structure's local up axis to that plane, then lifts its origin until every
  * sampled point clears the terrain. The final margin prevents coplanar flicker
  * and small triangle-to-model penetrations.
@@ -392,11 +444,34 @@ export function snapStructureToTerrain(
   const cosine = Math.cos(yaw);
   const sine = Math.sin(yaw);
   const samples: Array<{ dx: number; dy: number; height: number }> = [];
-  for (const localY of [-halfExtent, 0, halfExtent]) {
-    for (const localX of [-halfExtent, 0, halfExtent]) {
+  const sampleSteps = [-1, -0.5, 0, 0.5, 1];
+  for (const yStep of sampleSteps) {
+    for (const xStep of sampleSteps) {
+      const localX = halfExtent * xStep;
+      const localY = halfExtent * yStep;
       const dx = localX * cosine - localY * sine;
       const dy = localX * sine + localY * cosine;
       samples.push({ dx, dy, height: sampleHeight(terrain, worldX + dx, worldY + dy) });
+    }
+  }
+
+  // Also include every underlying terrain-grid vertex within the rotated
+  // footprint so a narrow ridge between regular samples cannot pierce a pad.
+  const gridStepX = terrain.worldWidth / Math.max(1, terrain.width - 1);
+  const gridStepY = terrain.worldHeight / Math.max(1, terrain.height - 1);
+  const worldExtent = halfExtent * (Math.abs(cosine) + Math.abs(sine));
+  const minimumGridX = Math.max(0, Math.ceil((worldX - worldExtent) / gridStepX));
+  const maximumGridX = Math.min(terrain.width - 1, Math.floor((worldX + worldExtent) / gridStepX));
+  const minimumGridY = Math.max(0, Math.ceil((worldY - worldExtent) / gridStepY));
+  const maximumGridY = Math.min(terrain.height - 1, Math.floor((worldY + worldExtent) / gridStepY));
+  for (let gridY = minimumGridY; gridY <= maximumGridY; gridY += 1) {
+    for (let gridX = minimumGridX; gridX <= maximumGridX; gridX += 1) {
+      const dx = gridX * gridStepX - worldX;
+      const dy = gridY * gridStepY - worldY;
+      const localX = dx * cosine + dy * sine;
+      const localY = -dx * sine + dy * cosine;
+      if (Math.abs(localX) > halfExtent + 1e-9 || Math.abs(localY) > halfExtent + 1e-9) continue;
+      samples.push({ dx, dy, height: terrain.heights[gridY * terrain.width + gridX] ?? 0 });
     }
   }
 
@@ -441,8 +516,7 @@ export function instantiateBaseTemplate(
 ): BaseTemplatePlacement {
   const units = template.units.filter((unit) => {
     const entity = { token: unit.token, subtype: unit.subtype, team };
-    const modelName = modelNameFor(entity);
-    return Boolean(modelName && (!manifest || manifest.models[modelName]));
+    return manifest ? hasModelForEntity(entity, manifest) : Boolean(modelNameFor(entity));
   });
   const skippedWithoutModel = template.units.length - units.length;
   if (!units.length) return { entities: [], scale: requestedScale, anchor: requestedAnchor, skippedWithoutModel };
@@ -483,8 +557,14 @@ export function instantiateBaseTemplate(
     const y = anchor[1] + rotatedOffsets[index][1] * scale;
     const yaw = normalizedYaw(unit.rotation[2] + safeYaw);
     const item = CATALOG.find((candidate) => candidate.token === unit.token && (unit.token !== 'c' || candidate.subtype === unit.subtype));
+    const clearance = structureTerrainClearance(
+      { token: unit.token, team },
+      manifest,
+      (item?.footprint ?? 10) * scale,
+      unit.groundOffset,
+    );
     const snap = usesFootprintTerrainSnap(unit.token)
-      ? snapStructureToTerrain(terrain, x, y, (item?.footprint ?? 10) * scale, yaw, unit.groundOffset)
+      ? snapStructureToTerrain(terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
       : undefined;
     return {
       id: createId(`${template.id}-${index + 1}`),
@@ -525,7 +605,26 @@ export function hasModelForEntity(
   manifest: AssetManifest,
 ): boolean {
   const name = modelNameFor(entity);
-  return Boolean(name && manifest.models[name]);
+  if (!name || !manifest.models[name]) return false;
+  if (entity.token !== 'c') return true;
+  const cargoTarget: Record<string, string> = {
+    e: 'e',
+    f: 'f',
+    r: 'r',
+    h: 'S',
+    s: 's',
+    g: 'g',
+    M: 'E',
+    L: 'L',
+    p: 'p',
+    o: 'o',
+    d: 'd',
+    b: 'b',
+  };
+  const targetToken = entity.subtype ? cargoTarget[entity.subtype] : undefined;
+  if (!targetToken) return false;
+  const deployedName = modelNameFor({ token: targetToken, team: entity.team });
+  return Boolean(deployedName && manifest.models[deployedName]);
 }
 
 export function catalogItemHasModel(item: CatalogItem, team: number, manifest: AssetManifest): boolean {

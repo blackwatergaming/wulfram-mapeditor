@@ -8,6 +8,8 @@ namespace WulframForge;
 
 internal sealed class MapRepositoryHost
 {
+    private const string DefaultBranch = "main";
+    private const string RepositoryName = "blackwatergaming/wulfram-maps";
     private static readonly string[] SourceFiles =
     [
         "map.json",
@@ -57,6 +59,8 @@ internal sealed class MapRepositoryHost
                 "save" => SaveMap(RequiredString(root, "slug"), root.GetProperty("files")),
                 "publish" => PublishMap(RequiredString(root, "slug")),
                 "configure" => ConfigureRepository(),
+                "diagnostics" => Diagnostics(),
+                "branch" => SwitchBranch(RequiredString(root, "branch"), root.TryGetProperty("create", out JsonElement create) && create.GetBoolean()),
                 _ => throw new InvalidOperationException($"Unknown native repository operation: {action}"),
             };
             webView.PostWebMessageAsJson(JsonSerializer.Serialize(new { id, ok = true, result }, JsonOptions));
@@ -67,7 +71,7 @@ internal sealed class MapRepositoryHost
         }
     }
 
-    private object ListMaps()
+    private Dictionary<string, object?> ListMaps()
     {
         string root = RequireRepository();
         string mapsRoot = Path.Combine(root, "maps");
@@ -97,13 +101,15 @@ internal sealed class MapRepositoryHost
             }
         }
         GitInfo git = ReadGitInfo(root);
-        return new
+        return new Dictionary<string, object?>
         {
-            repository = root,
-            branch = git.Branch,
-            remote = git.Remote,
-            changes = git.Changes,
-            maps = maps.OrderBy(map => map.Name, StringComparer.OrdinalIgnoreCase).ToArray(),
+            ["repository"] = root,
+            ["branch"] = git.Branch,
+            ["remote"] = git.Remote,
+            ["changes"] = git.Changes,
+            ["branches"] = git.Branches,
+            ["defaultBranch"] = DefaultBranch,
+            ["maps"] = maps.OrderBy(map => map.Name, StringComparer.OrdinalIgnoreCase).ToArray(),
         };
     }
 
@@ -137,7 +143,34 @@ internal sealed class MapRepositoryHost
             branch = git.Branch,
             remote = git.Remote,
             changes = git.Changes,
+            branches = git.Branches,
+            defaultBranch = DefaultBranch,
         };
+    }
+
+    private object SwitchBranch(string branch, bool create)
+    {
+        string root = RequireRepository();
+        if (string.IsNullOrWhiteSpace(branch) || branch != branch.Trim() || branch.Length > 120 ||
+            !TryRunGit(root, ["check-ref-format", "--branch", branch], out _, out _))
+            throw new InvalidDataException($"Invalid Git branch name: {branch}");
+        GitInfo current = ReadGitInfo(root);
+        if (current.Branch == branch) return ListMaps();
+        if (create)
+        {
+            if (current.Branches.Contains(branch, StringComparer.Ordinal))
+                throw new InvalidOperationException($"Branch {branch} already exists.");
+            RunGit(root, "switch", "-c", branch);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(RunGit(root, "status", "--porcelain")))
+                throw new InvalidOperationException("Commit, publish, or discard the current checkout changes before switching branches.");
+            if (!current.Branches.Contains(branch, StringComparer.Ordinal))
+                throw new InvalidOperationException($"Unknown local branch: {branch}");
+            RunGit(root, "switch", branch);
+        }
+        return ListMaps();
     }
 
     private object PublishMap(string slug)
@@ -149,29 +182,199 @@ internal sealed class MapRepositoryHost
             throw new InvalidOperationException("The maps checkout already has staged changes. Commit or unstage them before publishing.");
 
         string relative = $"maps/{slug}";
+        GitInfo git = ReadGitInfo(root);
+        if (git.Branch == "(detached)")
+            throw new InvalidOperationException("Publishing requires a named Git branch.");
+        string selectedChanges = RunGit(root, "status", "--porcelain", "--", relative);
+        if (git.Branch == DefaultBranch && string.IsNullOrWhiteSpace(selectedChanges))
+        {
+            Dictionary<string, object?> unchanged = ListMaps();
+            unchanged["committed"] = false;
+            unchanged["pushed"] = false;
+            unchanged["prCreated"] = false;
+            unchanged["prUrl"] = "";
+            unchanged["baseBranch"] = DefaultBranch;
+            unchanged["slugs"] = new[] { slug };
+            unchanged["message"] = "Sources already match Git; no pull request was needed.";
+            return unchanged;
+        }
+        if (git.Branch == DefaultBranch)
+        {
+            string[] outsideChanges = RunGit(root, "status", "--porcelain")
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(PorcelainPath)
+                .Where(changedPath => changedPath != relative && !changedPath.StartsWith(relative + "/", StringComparison.Ordinal))
+                .ToArray();
+            if (outsideChanges.Length > 0)
+                throw new InvalidOperationException($"Cannot create a publishing branch while unrelated changes exist: {string.Join(", ", outsideChanges)}");
+            string stem = $"maps/{slug}-{DateTime.UtcNow:yyyyMMdd-HHmm}";
+            string branch = stem;
+            int suffix = 2;
+            while (git.Branches.Contains(branch, StringComparer.Ordinal)) branch = $"{stem}-{suffix++}";
+            RunGit(root, "switch", "-c", branch);
+            git = ReadGitInfo(root);
+        }
+
         RunGit(root, "add", "--", relative);
         string staged = RunGit(root, "diff", "--cached", "--name-only", "--", relative);
         bool committed = !string.IsNullOrWhiteSpace(staged);
+        using JsonDocument metadata = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, relative, "map.json")));
+        string name = RequiredString(metadata.RootElement, "name");
         if (committed)
         {
-            using JsonDocument metadata = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, relative, "map.json")));
-            string name = RequiredString(metadata.RootElement, "name");
             RunGit(root, "commit", "-m", $"Update {name}");
-            RunGit(root, "push", "origin", "HEAD");
         }
-        GitInfo git = ReadGitInfo(root);
-        return new
+        int ahead = int.TryParse(RunGit(root, "rev-list", "--count", $"{DefaultBranch}..HEAD"), out int count) ? count : 0;
+        if (ahead == 0)
         {
-            committed,
-            pushed = committed,
-            slugs = new[] { slug },
-            message = committed ? $"Published {slug}." : "Sources already match Git.",
-            repository = root,
-            branch = git.Branch,
-            remote = git.Remote,
-            changes = git.Changes,
-            maps = Array.Empty<object>(),
+            Dictionary<string, object?> unchanged = ListMaps();
+            unchanged["committed"] = committed;
+            unchanged["pushed"] = false;
+            unchanged["prCreated"] = false;
+            unchanged["prUrl"] = "";
+            unchanged["baseBranch"] = DefaultBranch;
+            unchanged["slugs"] = new[] { slug };
+            unchanged["message"] = "This branch has no changes from main; no pull request was needed.";
+            return unchanged;
+        }
+
+        if (!TryRunProcess("gh", null, ["auth", "status", "--hostname", "github.com"], out _, out _))
+            throw new InvalidOperationException("GitHub CLI is not authenticated. Run gh auth login, then retry Publish.");
+        RunGit(root, "push", "--set-upstream", "origin", git.Branch);
+        string[] viewArguments = ["pr", "view", git.Branch, "--repo", RepositoryName, "--json", "url", "--jq", ".url"];
+        bool hasPullRequest = TryRunProcess("gh", root, viewArguments, out string pullRequestUrl, out _)
+            && !string.IsNullOrWhiteSpace(pullRequestUrl);
+        bool prCreated = false;
+        if (!hasPullRequest)
+        {
+            string body = $"Updates canonical Wulfram map source for `{slug}`.\n\nCreated by Wulfram Forge.";
+            string[] createArguments =
+            [
+                "pr", "create", "--repo", RepositoryName, "--base", DefaultBranch,
+                "--head", git.Branch, "--title", $"Update {name}", "--body", body,
+            ];
+            if (!TryRunProcess("gh", root, createArguments, out pullRequestUrl, out string createError))
+            {
+                if (!TryRunProcess("gh", root, viewArguments, out pullRequestUrl, out _) || string.IsNullOrWhiteSpace(pullRequestUrl))
+                    throw new InvalidOperationException($"Could not open the GitHub pull request: {createError}");
+            }
+            else
+            {
+                prCreated = true;
+                pullRequestUrl = pullRequestUrl.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(line => line.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) ?? pullRequestUrl;
+            }
+        }
+
+        Dictionary<string, object?> result = ListMaps();
+        result["committed"] = committed;
+        result["pushed"] = true;
+        result["prCreated"] = prCreated;
+        result["prUrl"] = pullRequestUrl;
+        result["baseBranch"] = DefaultBranch;
+        result["slugs"] = new[] { slug };
+        result["message"] = $"{(prCreated ? "Opened" : "Updated")} pull request for {name} into {DefaultBranch}: {pullRequestUrl}";
+        return result;
+    }
+
+    private object Diagnostics()
+    {
+        string resolved = Path.GetFullPath(repository);
+        List<Dictionary<string, string>> checks = [];
+        static Dictionary<string, string> Check(string id, string label, string status, string detail, string fix = "") => new()
+        {
+            ["id"] = id,
+            ["label"] = label,
+            ["status"] = status,
+            ["detail"] = detail,
+            ["fix"] = fix,
         };
+
+        checks.Add(Check("service", "Desktop bridge", "pass", "The embedded maps bridge is responding."));
+        bool checkoutExists = Directory.Exists(Path.Combine(resolved, ".git"));
+        checks.Add(Check(
+            "repository",
+            "Maps checkout",
+            checkoutExists ? "pass" : "fail",
+            checkoutExists ? resolved : $"No Git checkout was found at {resolved}.",
+            $"gh repo clone {RepositoryName} \"{resolved}\""));
+        bool hasGit = TryRunProcess("git", null, ["--version"], out string gitVersion, out _);
+        checks.Add(Check(
+            "git",
+            "Git command",
+            hasGit ? "pass" : "fail",
+            hasGit ? gitVersion : "Git is not available on PATH.",
+            "Install Git for Windows and restart Wulfram Forge."));
+        bool hasGh = TryRunProcess("gh", null, ["--version"], out string ghVersion, out _);
+        checks.Add(Check(
+            "github-cli",
+            "GitHub CLI",
+            hasGh ? "pass" : "fail",
+            hasGh ? ghVersion.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? ghVersion : "GitHub CLI is not available on PATH.",
+            "Install GitHub CLI, then run: gh auth login"));
+        bool hasAuth = hasGh && TryRunProcess("gh", null, ["auth", "status", "--hostname", "github.com"], out _, out _);
+        checks.Add(Check(
+            "github-auth",
+            "GitHub authentication",
+            hasAuth ? "pass" : "fail",
+            hasAuth ? "Authenticated with github.com." : "GitHub CLI is not authenticated.",
+            "Run: gh auth login"));
+
+        GitInfo? info = null;
+        if (checkoutExists && hasGit)
+        {
+            try
+            {
+                info = ReadGitInfo(resolved);
+                string normalizedRemote = info.Remote.Replace('\\', '/');
+                bool correctRemote = Regex.IsMatch(normalizedRemote, @"(?:github\.com[/:])blackwatergaming/wulfram-maps(?:\.git)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                checks.Add(Check(
+                    "origin",
+                    "Origin remote",
+                    correctRemote ? "pass" : "warn",
+                    string.IsNullOrWhiteSpace(info.Remote) ? "No origin remote is configured." : info.Remote,
+                    $"git remote set-url origin https://github.com/{RepositoryName}.git"));
+                bool hasMain = info.Branches.Contains(DefaultBranch, StringComparer.Ordinal)
+                    || TryRunGit(resolved, ["show-ref", "--verify", "--quiet", $"refs/remotes/origin/{DefaultBranch}"], out _, out _);
+                checks.Add(Check(
+                    "main",
+                    "PR target branch",
+                    hasMain ? "pass" : "fail",
+                    hasMain ? $"{DefaultBranch} is available." : $"{DefaultBranch} is missing locally and from origin.",
+                    $"git fetch origin {DefaultBranch}:{DefaultBranch}"));
+                checks.Add(Check(
+                    "branch",
+                    "Working branch",
+                    info.Branch == "(detached)" ? "fail" : info.Branch == DefaultBranch ? "warn" : "pass",
+                    info.Branch == DefaultBranch ? "On main; Publish will create a feature branch automatically." : $"On {info.Branch}."));
+                checks.Add(Check(
+                    "worktree",
+                    "Map working tree",
+                    info.Changes > 0 ? "warn" : "pass",
+                    info.Changes > 0 ? $"{info.Changes} uncommitted map path(s)." : "Map sources are clean."));
+            }
+            catch (Exception error)
+            {
+                checks.Add(Check("git-checkout", "Git checkout", "fail", error.Message));
+            }
+        }
+
+        Dictionary<string, object?> result = new()
+        {
+            ["ok"] = checks.All(check => check["status"] != "fail"),
+            ["service"] = "Wulfram Forge desktop bridge",
+            ["repository"] = resolved,
+            ["checks"] = checks,
+        };
+        if (info is not null)
+        {
+            result["branch"] = info.Branch;
+            result["remote"] = info.Remote;
+            result["changes"] = info.Changes;
+            result["branches"] = info.Branches;
+            result["defaultBranch"] = DefaultBranch;
+        }
+        return result;
     }
 
     private object ConfigureRepository()
@@ -253,33 +456,65 @@ internal sealed class MapRepositoryHost
     private static GitInfo ReadGitInfo(string root)
     {
         string branch = RunGit(root, "branch", "--show-current");
+        if (string.IsNullOrWhiteSpace(branch)) branch = "(detached)";
         string remote = RunGit(root, "remote", "get-url", "origin");
         int changes = RunGit(root, "status", "--porcelain", "--", "maps")
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Length;
-        return new GitInfo(branch, remote, changes);
+        string[] branches = RunGit(root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        return new GitInfo(branch, remote, changes, branches);
     }
 
-    private static string RunGit(string root, params string[] arguments)
+    private static string PorcelainPath(string line)
     {
-        ProcessStartInfo start = new("git")
+        int offset = line.Length > 2 && line[2] == ' ' ? 3 : line.Length > 1 && line[1] == ' ' ? 2 : 3;
+        string value = line.Length > offset ? line[offset..].Trim() : "";
+        int rename = value.LastIndexOf(" -> ", StringComparison.Ordinal);
+        if (rename >= 0) value = value[(rename + 4)..];
+        return value.Trim('"').Replace('\\', '/');
+    }
+
+    private static bool TryRunGit(string root, string[] arguments, out string output, out string error)
+    {
+        return TryRunProcess("git", null, ["-C", root, .. arguments], out output, out error);
+    }
+
+    private static bool TryRunProcess(string command, string? workingDirectory, string[] arguments, out string output, out string error)
+    {
+        ProcessStartInfo start = new(command)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        start.ArgumentList.Add("-C");
-        start.ArgumentList.Add(root);
+        if (!string.IsNullOrWhiteSpace(workingDirectory)) start.WorkingDirectory = workingDirectory;
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
-        using Process process = Process.Start(start) ?? throw new InvalidOperationException("Could not start local git.");
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {error.Trim()}");
-        return output.Trim();
+        try
+        {
+            using Process process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start local {command}.");
+            output = process.StandardOutput.ReadToEnd().Trim();
+            error = process.StandardError.ReadToEnd().Trim();
+            process.WaitForExit();
+            return process.ExitCode == 0;
+        }
+        catch (Exception exception)
+        {
+            output = "";
+            error = exception.Message;
+            return false;
+        }
     }
 
-    private sealed record GitInfo(string Branch, string Remote, int Changes);
+    private static string RunGit(string root, params string[] arguments)
+    {
+        if (!TryRunGit(root, arguments, out string output, out string error))
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {error}");
+        return output;
+    }
+
+    private sealed record GitInfo(string Branch, string Remote, int Changes, string[] Branches);
     private sealed record MapSummary(string Slug, string Name, string UpdatedAt, int Width, int Height, int Entities);
 }

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   CATALOG,
+  MODEL_WORLD_SCALE,
+  STRUCTURE_BOTTOM_MARGIN,
   catalogFor,
   catalogItemHasModel,
   createBlankProject,
@@ -14,6 +16,7 @@ import {
   parseState,
   sampleHeight,
   snapStructureToTerrain,
+  structureTerrainClearance,
   usesFootprintTerrainSnap,
 } from '../lib/wulfram.ts';
 
@@ -133,13 +136,20 @@ void test('template placement rotates, auto-fits, clamps, remaps, and terrain-co
     assert.ok(entity.position[0] >= 10 - 1e-9 && entity.position[0] <= terrain.worldWidth - 10 + 1e-9, `unit ${index}: X bounds`);
     assert.ok(entity.position[1] >= 10 - 1e-9 && entity.position[1] <= terrain.worldHeight - 10 + 1e-9, `unit ${index}: Y bounds`);
     if (usesFootprintTerrainSnap(entity.token)) {
+      const clearance = structureTerrainClearance(
+        entity,
+        manifest,
+        (catalogFor(entity)?.footprint ?? 10) * placement.scale,
+        source.groundOffset,
+      );
       const expected = snapStructureToTerrain(
         terrain,
         entity.position[0],
         entity.position[1],
-        (catalogFor(entity)?.footprint ?? 10) * placement.scale,
+        clearance.footprint,
         entity.rotation[2],
-        source.groundOffset,
+        clearance.groundOffset,
+        clearance.margin,
       );
       close(entity.position[2], expected.height, 1e-9, `unit ${index}: footprint-conformed Z`);
       close(entity.rotation[0], expected.pitch, 1e-12, `unit ${index}: slope pitch`);
@@ -168,9 +178,73 @@ void test('footprint snapping clears a sloped surface with an explicit safety ma
   assert.notEqual(result.roll, 0);
 });
 
+void test('repair and refuel pads clear their complete rendered undersides and edge terrain', () => {
+  const terrain = createBlankProject('Pad clearance', 17).terrain;
+  terrain.worldWidth = 160;
+  terrain.worldHeight = 160;
+  terrain.heights.fill(20);
+  terrain.heights[8 * terrain.width + 5] = 29;
+  terrain.heights[8 * terrain.width + 11] = 29;
+
+  for (const token of ['f', 'r']) {
+    assert.equal(usesFootprintTerrainSnap(token), true, `${token}: must use footprint snapping`);
+    const item = CATALOG.find((candidate) => candidate.token === token);
+    assert.ok(item);
+    for (const team of [1, 2]) {
+      const clearance = structureTerrainClearance({ token, team }, manifest, item.footprint, 0, 0.75);
+      const asset = manifest.models[clearance.modelName];
+      const renderedWidth = (asset.bounds.max[0] - asset.bounds.min[0]) * MODEL_WORLD_SCALE;
+      const renderedDepth = (asset.bounds.max[1] - asset.bounds.min[1]) * MODEL_WORLD_SCALE;
+      const renderedBottom = -asset.bounds.min[2] * MODEL_WORLD_SCALE;
+      assert.ok(clearance.footprint >= renderedWidth, `${token}/${team}: full model width`);
+      assert.ok(clearance.footprint >= renderedDepth, `${token}/${team}: full model depth`);
+      assert.ok(clearance.groundOffset >= renderedBottom, `${token}/${team}: complete underside`);
+      assert.ok(clearance.margin >= STRUCTURE_BOTTOM_MARGIN, `${token}/${team}: bottom margin`);
+
+      const snapped = snapStructureToTerrain(
+        terrain,
+        80,
+        80,
+        clearance.footprint,
+        0,
+        clearance.groundOffset,
+        clearance.margin,
+      );
+      assert.ok(
+        snapped.height - clearance.modelBottom >= 29 + STRUCTURE_BOTTOM_MARGIN - 1e-9,
+        `${token}/${team}: terrain peaks outside the legacy 26-unit footprint must not clip`,
+      );
+    }
+  }
+});
+
+void test('every surviving placeable model uses full-bounds terrain clearance', () => {
+  for (const item of CATALOG) {
+    if (!catalogItemHasModel(item, 1, manifest)) continue;
+    assert.equal(usesFootprintTerrainSnap(item.token), true, `${item.key}: terrain snapping`);
+    for (const team of [0, 1, 2]) {
+      const clearance = structureTerrainClearance({ token: item.token, team }, manifest, item.footprint, 0);
+      const asset = manifest.models[clearance.modelName];
+      assert.ok(asset, `${item.key}/${team}: model`);
+      assert.ok(clearance.groundOffset >= -asset.bounds.min[2] * MODEL_WORLD_SCALE, `${item.key}/${team}: underside`);
+      assert.ok(clearance.footprint >= (asset.bounds.max[0] - asset.bounds.min[0]) * MODEL_WORLD_SCALE, `${item.key}/${team}: width`);
+      assert.ok(clearance.footprint >= (asset.bounds.max[1] - asset.bounds.min[1]) * MODEL_WORLD_SCALE, `${item.key}/${team}: depth`);
+    }
+  }
+});
+
 void test('build placement omits removed types while retaining neutral modeled units', () => {
   const unsupported = CATALOG.filter((item) => !catalogItemHasModel(item, 1, manifest));
-  assert.deepEqual(unsupported.map((item) => item.key), ['shield', 'silo', 'portal', 'bug']);
+  assert.deepEqual(unsupported.map((item) => item.key), [
+    'shield',
+    'silo',
+    'portal',
+    'bug',
+    'cargo-shield',
+    'cargo-silo',
+    'cargo-portal',
+    'cargo-bug',
+  ]);
   const template = library.templates.find((candidate) => candidate.units.some((unit) => unit.token === 'h'));
   assert.ok(template, 'Expected a discovered base containing a removed supply-ship type.');
   const terrain = createBlankProject('Modeled units only', 17).terrain;

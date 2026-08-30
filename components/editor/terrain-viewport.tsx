@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls';
 import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
-import { catalogFor, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
+import { MODEL_WORLD_SCALE, catalogFor, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
 
 export type EditorMode = 'terrain' | 'base';
 export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint';
@@ -31,6 +31,8 @@ interface TerrainViewportProps {
   onTerrainStroke: (x: number, y: number, phase: StrokePhase) => void;
   onPlace: (x: number, y: number) => void;
   onSelectEntity: (id?: string) => void;
+  onMoveEntity: (id: string, x: number, y: number) => void;
+  resolveEntityMove: (entity: StateEntity, x: number, y: number) => StateEntity;
   onCursor: (point?: [number, number, number]) => void;
 }
 
@@ -353,6 +355,21 @@ function positionPlacementGhosts(
   root.visible = mode === 'base' && preview.length > 0;
 }
 
+function positionEntityHolder(holder: THREE.Group, entity: StateEntity, terrain: TerrainData, scale: number) {
+  holder.position.set(
+    (entity.position[0] - terrain.worldWidth / 2) * scale,
+    entity.position[2] * scale,
+    (entity.position[1] - terrain.worldHeight / 2) * scale,
+  );
+  const modelHolder = holder.children.find((child) => child.userData.entityModelHolder === true);
+  modelHolder?.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+  const ground = sampleHeight(terrain, entity.position[0], entity.position[1]);
+  for (const child of holder.children) {
+    if (typeof child.userData.groundOverlayLift !== 'number') continue;
+    child.position.y = (ground - entity.position[2]) * scale + child.userData.groundOverlayLift;
+  }
+}
+
 async function originalUnit(
   entity: StateEntity,
   manifest: AssetManifest,
@@ -364,7 +381,7 @@ async function originalUnit(
   if (!asset) return undefined;
   const shape = await loadShape(asset.url);
   const group = new THREE.Group();
-  const modelScale = scale * 2.1;
+  const modelScale = scale * MODEL_WORLD_SCALE;
   for (const part of shape.meshes) {
     const positions = new Float32Array(part.positions.length);
     for (let index = 0; index < part.positions.length; index += 3) {
@@ -412,6 +429,8 @@ export function TerrainViewport({
   onTerrainStroke,
   onPlace,
   onSelectEntity,
+  onMoveEntity,
+  resolveEntityMove,
   onCursor,
 }: TerrainViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -432,7 +451,7 @@ export function TerrainViewport({
   const brushRef = useRef<THREE.Mesh | null>(null);
   const invalidateRef = useRef<(updateShadows?: boolean) => void>(() => undefined);
   const scaleRef = useRef(160 / Math.max(terrain.worldWidth, terrain.worldHeight));
-  const propsRef = useRef({ mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onCursor });
+  const propsRef = useRef({ mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, resolveEntityMove, onCursor });
   const entitiesRef = useRef(entities);
   const terrainRef = useRef(terrain);
   const strokeRef = useRef(false);
@@ -456,8 +475,8 @@ export function TerrainViewport({
   }, [placementPreview, placementPreviewAnchor]);
 
   useEffect(() => {
-    propsRef.current = { mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onCursor };
-  }, [mode, onCursor, onPlace, onSelectEntity, onTerrainStroke, selectedPlacementKey, terrainTool]);
+    propsRef.current = { mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, resolveEntityMove, onCursor };
+  }, [mode, onCursor, onMoveEntity, onPlace, onSelectEntity, onTerrainStroke, resolveEntityMove, selectedPlacementKey, terrainTool]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -766,6 +785,7 @@ export function TerrainViewport({
       root.add(holder);
       const modelHolder = new THREE.Group();
       modelHolder.userData.entityId = entity.id;
+      modelHolder.userData.entityModelHolder = true;
       modelHolder.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
       holder.add(modelHolder);
       const placeholder = fallbackUnit(entity, scale);
@@ -793,7 +813,8 @@ export function TerrainViewport({
         );
         ring.raycast = () => undefined;
         ring.rotation.x = -Math.PI / 2;
-        ring.position.y = -entity.position[2] * scale + 0.025;
+        ring.userData.groundOverlayLift = 0.025;
+        ring.position.y = (sampleHeight(terrainRef.current, entity.position[0], entity.position[1]) - entity.position[2]) * scale + 0.025;
         ring.renderOrder = 30;
         holder.add(ring);
       }
@@ -806,7 +827,8 @@ export function TerrainViewport({
         );
         range.raycast = () => undefined;
         range.rotation.x = -Math.PI / 2;
-        range.position.y = -entity.position[2] * scale + 0.018;
+        range.userData.groundOverlayLift = 0.018;
+        range.position.y = (sampleHeight(terrainRef.current, entity.position[0], entity.position[1]) - entity.position[2]) * scale + 0.018;
         holder.add(range);
         const backup = backupRadius * scale;
         const backupRange = new THREE.Mesh(
@@ -815,7 +837,8 @@ export function TerrainViewport({
         );
         backupRange.raycast = () => undefined;
         backupRange.rotation.x = -Math.PI / 2;
-        backupRange.position.y = -entity.position[2] * scale + 0.022;
+        backupRange.userData.groundOverlayLift = 0.022;
+        backupRange.position.y = (sampleHeight(terrainRef.current, entity.position[0], entity.position[1]) - entity.position[2]) * scale + 0.022;
         holder.add(backupRange);
       }
     }
@@ -940,6 +963,8 @@ export function TerrainViewport({
         point.y / scale,
       ];
     };
+    const holderForEntity = (id: string) => entityRootRef.current.children.find((child) => child.userData.entityId === id) as THREE.Group | undefined;
+    let unitDrag: { id: string; original: StateEntity; last?: [number, number] } | undefined;
     let lastCursorUpdate = 0;
     let cursorVisible = false;
     const publishCursor = (point?: [number, number, number]) => {
@@ -954,6 +979,15 @@ export function TerrainViewport({
         lastCursorUpdate = now;
       }
       cursorVisible = true;
+    };
+    const previewUnitDrag = (x: number, y: number) => {
+      if (!unitDrag) return;
+      const moved = propsRef.current.resolveEntityMove(unitDrag.original, x, y);
+      const holder = holderForEntity(unitDrag.id);
+      if (holder) positionEntityHolder(holder, moved, terrainRef.current, scaleRef.current);
+      unitDrag.last = [x, y];
+      publishCursor([x, y, moved.position[2]]);
+      invalidateRef.current();
     };
     const moveBrush = (result?: THREE.Intersection) => {
       const brush = brushRef.current;
@@ -986,6 +1020,13 @@ export function TerrainViewport({
       if (!latestPointer) return;
       const intersections = hit(latestPointer.clientX, latestPointer.clientY);
       const ground = terrainPoint(intersections);
+      if (unitDrag) {
+        if (ground) {
+          const [x, y] = toWorld(ground.point);
+          previewUnitDrag(x, y);
+        }
+        return;
+      }
       moveBrush(ground);
       if (strokeRef.current && ground) {
         const [x, y] = toWorld(ground.point);
@@ -1009,11 +1050,26 @@ export function TerrainViewport({
       renderer.domElement.focus({ preventScroll: true });
       const intersections = hit(event.clientX, event.clientY, propsRef.current.mode === 'base');
       const unitHit = intersections.find((result) => entityId(result.object));
+      const ground = terrainPoint(intersections);
       if (propsRef.current.mode === 'base' && unitHit) {
-        propsRef.current.onSelectEntity(entityId(unitHit.object));
+        const id = entityId(unitHit.object);
+        if (!id) return;
+        propsRef.current.onSelectEntity(id);
+        if (event.shiftKey && ground) {
+          const original = entitiesRef.current.find((entity) => entity.id === id);
+          if (!original) return;
+          unitDrag = {
+            id,
+            original: { ...original, position: [...original.position], rotation: [...original.rotation] },
+          };
+          controls.enabled = false;
+          renderer.domElement.style.cursor = 'grabbing';
+          renderer.domElement.setPointerCapture(event.pointerId);
+          const [x, y] = toWorld(ground.point);
+          previewUnitDrag(x, y);
+        }
         return;
       }
-      const ground = terrainPoint(intersections);
       if (!ground) return;
       const [x, y] = toWorld(ground.point);
       if (propsRef.current.mode === 'base') {
@@ -1026,7 +1082,23 @@ export function TerrainViewport({
         propsRef.current.onTerrainStroke(x, y, 'start');
       }
     };
-    const endStroke = (event: PointerEvent) => {
+    const endInteraction = (event: PointerEvent) => {
+      if (unitDrag) {
+        flushPointerMove();
+        const completed = unitDrag;
+        unitDrag = undefined;
+        controls.enabled = true;
+        renderer.domElement.style.cursor = '';
+        if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        if (event.type === 'pointercancel' || !completed.last) {
+          const holder = holderForEntity(completed.id);
+          if (holder) positionEntityHolder(holder, completed.original, terrainRef.current, scaleRef.current);
+        } else {
+          propsRef.current.onMoveEntity(completed.id, completed.last[0], completed.last[1]);
+        }
+        invalidateRef.current(true);
+        return;
+      }
       if (!strokeRef.current) return;
       flushPointerMove();
       strokeRef.current = false;
@@ -1036,6 +1108,7 @@ export function TerrainViewport({
       invalidateRef.current(true);
     };
     const onLeave = () => {
+      if (unitDrag) return;
       if (brushRef.current) brushRef.current.visible = false;
       placementRootRef.current.visible = false;
       publishCursor(undefined);
@@ -1044,18 +1117,19 @@ export function TerrainViewport({
     const onContextMenu = (event: MouseEvent) => event.preventDefault();
     renderer.domElement.addEventListener('pointermove', onPointerMove);
     renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
-    renderer.domElement.addEventListener('pointerup', endStroke);
-    renderer.domElement.addEventListener('pointercancel', endStroke);
+    renderer.domElement.addEventListener('pointerup', endInteraction);
+    renderer.domElement.addEventListener('pointercancel', endInteraction);
     renderer.domElement.addEventListener('pointerleave', onLeave);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
     return () => {
       if (pointerFrame) cancelAnimationFrame(pointerFrame);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown, true);
-      renderer.domElement.removeEventListener('pointerup', endStroke);
-      renderer.domElement.removeEventListener('pointercancel', endStroke);
+      renderer.domElement.removeEventListener('pointerup', endInteraction);
+      renderer.domElement.removeEventListener('pointercancel', endInteraction);
       renderer.domElement.removeEventListener('pointerleave', onLeave);
       renderer.domElement.removeEventListener('contextmenu', onContextMenu);
+      renderer.domElement.style.cursor = '';
     };
   }, [terrain.worldHeight, terrain.worldWidth]);
 
@@ -1069,8 +1143,8 @@ export function TerrainViewport({
         )}
       </div>
       <div className="viewport-help">
-        <span>Mouse · Left edit/place · Right orbit · Wheel zoom</span>
-        <span>Keys · WASD pan · Arrows turn/tilt · Q/E or +/− zoom · Home reset</span>
+        <span>Mouse · Left edit/place · Shift-drag unit · Right orbit · Wheel zoom</span>
+        <span>Keys · WASD pan · Arrows turn/tilt · Q/E or +/− zoom · Home reset · Esc cancel placement</span>
       </div>
     </div>
   );

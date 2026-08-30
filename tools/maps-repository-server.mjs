@@ -6,9 +6,11 @@ import {
   listRepositoryMaps,
   loadRepositoryMap,
   publishRepositoryMaps,
+  repositoryDiagnostics,
   repositoryGitInfo,
   resolveMapsRepository,
   saveRepositoryMap,
+  switchRepositoryBranch,
 } from './map-repository-lib.mjs';
 
 const DEFAULT_PORT = 4319;
@@ -61,7 +63,7 @@ function routeSlug(pathname) {
 export async function startRepositoryServer(options = {}) {
   const repository = resolveMapsRepository(options.repository);
   const port = Number(
-    options.port || process.env.WULFRAM_MAPS_PORT || DEFAULT_PORT,
+    options.port ?? process.env.WULFRAM_MAPS_PORT ?? DEFAULT_PORT,
   );
   const server = http.createServer(async (request, response) => {
     try {
@@ -81,11 +83,25 @@ export async function startRepositoryServer(options = {}) {
       if (request.method === 'GET' && url.pathname === '/health') {
         json(request, response, 200, {
           ok: true,
-          ...repositoryGitInfo(repository),
+          service: 'Wulfram maps service',
+          repository: path.resolve(repository),
         });
         return;
       }
+      if (request.method === 'GET' && url.pathname === '/diagnostics') {
+        json(request, response, 200, repositoryDiagnostics(repository));
+        return;
+      }
       if (request.method === 'GET' && url.pathname === '/maps') {
+        json(request, response, 200, {
+          ...repositoryGitInfo(repository),
+          maps: listRepositoryMaps(repository),
+        });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/branches') {
+        const body = await readJsonBody(request);
+        switchRepositoryBranch(repository, body.branch, Boolean(body.create));
         json(request, response, 200, {
           ...repositoryGitInfo(repository),
           maps: listRepositoryMaps(repository),
@@ -115,6 +131,7 @@ export async function startRepositoryServer(options = {}) {
         json(request, response, 200, {
           ...result,
           ...repositoryGitInfo(repository),
+          maps: listRepositoryMaps(repository),
         });
         return;
       }
@@ -133,9 +150,16 @@ export async function startRepositoryServer(options = {}) {
       resolve();
     });
   });
+  const address = server.address();
+  const boundPort = address && typeof address === 'object' ? address.port : port;
   console.log(
-    `Wulfram maps service: http://127.0.0.1:${port} (${path.resolve(repository)})`,
+    `Wulfram maps service: http://127.0.0.1:${boundPort} (${path.resolve(repository)})`,
   );
+  console.log(`Diagnostics: http://127.0.0.1:${boundPort}/diagnostics`);
+  const startup = repositoryDiagnostics(repository);
+  for (const check of startup.checks.filter((entry) => entry.status === 'fail')) {
+    console.warn(`[setup] ${check.label}: ${check.detail}${check.fix ? ` Fix: ${check.fix}` : ''}`);
+  }
   return server;
 }
 
