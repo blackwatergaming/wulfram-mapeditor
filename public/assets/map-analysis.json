@@ -1,0 +1,99 @@
+{
+  "source": {
+    "mapsRoot": "../wulfram-debug/data/maps",
+    "stateFiles": 28,
+    "records": 1601,
+    "method": "Ghidra-verified state parser plus robust statistics over shipped maps"
+  },
+  "entityTokens": {
+    "i": "Mine",
+    "c": "Cargo Box",
+    "u": "Uplink",
+    "h": "Supply Ship",
+    "e": "Power Cell",
+    "f": "Refuel Pad",
+    "r": "Repair Pad",
+    "S": "Shield",
+    "s": "Flak Turret",
+    "g": "Gun Turret",
+    "E": "Heavy Missile Silo",
+    "L": "Missile Launcher",
+    "p": "Skypump",
+    "o": "Portal",
+    "d": "Darklight",
+    "b": "Spy Bug",
+    "*": "Decoration"
+  },
+  "cargoTokens": {
+    "e": "Power Cell",
+    "f": "Refuel Pad",
+    "r": "Repair Pad",
+    "h": "Shield",
+    "s": "Flak Turret",
+    "g": "Gun Turret",
+    "M": "Heavy Missile Silo",
+    "L": "Missile Launcher",
+    "p": "Skypump",
+    "o": "Portal",
+    "d": "Darklight",
+    "b": "Spy Bug"
+  },
+  "tokenCounts": {
+    "L": 9,
+    "c L": 6,
+    "c d": 4,
+    "c e": 76,
+    "c f": 38,
+    "c g": 96,
+    "c p": 91,
+    "c r": 32,
+    "c s": 96,
+    "d": 8,
+    "e": 166,
+    "f": 406,
+    "g": 166,
+    "h": 52,
+    "i": 2,
+    "p": 12,
+    "r": 89,
+    "s": 224,
+    "u": 28
+  },
+  "turretDefaults": {
+    "g": {
+      "name": "Gun Turret",
+      "sampleCount": 166,
+      "heightSampleCount": 166,
+      "heightOffset": 16.42,
+      "pitch": 0.0,
+      "roll": 0.0,
+      "yawCircularMean": 1.101406,
+      "medianTiltDegrees": 11.58
+    },
+    "s": {
+      "name": "Flak Turret",
+      "sampleCount": 224,
+      "heightSampleCount": 224,
+      "heightOffset": 15.847,
+      "pitch": 0.0,
+      "roll": 0.000969,
+      "yawCircularMean": 5.140073,
+      "medianTiltDegrees": 7.9
+    }
+  },
+  "powerCell": {
+    "serviceRadius": 300,
+    "backupRadius": 80,
+    "poweredDistanceSamples": 894,
+    "nearestPoweredP50": 220.39,
+    "nearestPoweredP95": 3205.55,
+    "denseClusterSamples": 606,
+    "denseClusterP75": 224.54,
+    "note": "Offline defaults inferred from the dense shipped-placement cluster; the original client receives server-specific values in BEHAVIOR.",
+    "ghidraRule": {
+      "primaryOverlapBlockDistance": "2 * serviceRadius + 10",
+      "backupProbeDistance": "backupRadius - 10",
+      "poweredItemProbeDistance": "serviceRadius - 10"
+    }
+  }
+}

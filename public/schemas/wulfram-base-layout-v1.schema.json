@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/blackwatergaming/wulfram-mapeditor/main/public/schemas/wulfram-base-layout-v1.schema.json",
+  "title": "Wulfram Base Layout",
+  "description": "Versioned JSON equivalent of a Wulfram state file for new-server tooling.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "map", "validation", "units"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "format": { "const": "wulfram-base-layout" },
+    "version": { "const": 1 },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "coordinateSystem", "worldSize"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "coordinateSystem": { "const": "wulfram-world-xy-z-up" },
+        "worldSize": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "number", "exclusiveMinimum": 0 },
+            "y": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceRadius", "backupRadius", "maxSlopeDegrees", "minSpacing"],
+      "properties": {
+        "serviceRadius": { "type": "number", "exclusiveMinimum": 10 },
+        "backupRadius": { "type": "number", "minimum": 10 },
+        "maxSlopeDegrees": { "type": "number", "minimum": 0, "maximum": 90 },
+        "minSpacing": { "type": "number", "minimum": 0 }
+      }
+    },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "stateToken", "type", "team", "position", "rotationRadians", "active"],
+        "properties": {
+          "id": { "type": "string" },
+          "stateToken": { "type": "string", "minLength": 1, "maxLength": 1 },
+          "cargoToken": { "type": "string", "minLength": 1, "maxLength": 1 },
+          "type": { "type": "string" },
+          "team": { "type": "integer" },
+          "position": { "$ref": "#/$defs/vec3" },
+          "rotationRadians": { "$ref": "#/$defs/vec3" },
+          "active": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    }
+  }
+}

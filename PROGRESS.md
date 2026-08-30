@@ -1,0 +1,40 @@
+# Wulfram Map Editor — Progress
+
+Updated: 2026-08-30
+
+## In progress
+
+- [x] Confirmed the target GitHub repository exists and is empty.
+- [x] Scaffolded the browser application with the Sites/React toolchain.
+- [x] Located the original terrain, map state, bitmap, and shape archives in `../wulfram-debug`.
+- [x] Decode the original `land` and `state` formats and derive placement defaults from shipped maps.
+- [x] Extract and convert the original textures and models into browser-ready assets.
+- [x] Build the Terrain Editor mode.
+- [x] Build the Base Builder mode with validated placement rules.
+- [x] Add a full create/import/edit/validate/save/export map lifecycle.
+- [x] Add grayscale heightmap import and terrain texture-painting tools.
+- [x] Add original map import/export plus versioned JSON base-layout import/export for the new server.
+- [x] Add undo/redo and local project persistence.
+- [x] Validate type safety, lint, map-format round trips, asset references, the production build, and the local HTTP route.
+- [x] Commit and push the completed editor to `blackwatergaming/wulfram-mapeditor`.
+
+## Findings
+
+- Source assets are available under `../wulfram-debug/data`.
+- Shipped maps contain `land`, `state`/`db_state`, `tagmap`, and supplemental files.
+- Original `land` files are `width x height`, `worldWidth x worldHeight`, then one texture-index/height pair per vertex.
+- Original `state` rows use entity tokens followed by team, XYZ, rotation XYZ (radians), and active state; cargo rows include a subtype token.
+- Ghidra confirms power-cell validation uses `backupRadius - 10`, `2 * serviceRadius + 10`, and `serviceRadius - 10` thresholds. These radii are server-supplied, so the editor exposes editable offline defaults.
+- Ghidra-verified checkerboard triangle sampling plus shipped placements yield median ground offsets of 16.420 (gun) and 15.847 (flak), with rotations stored in radians.
+- Converted 499 original terrain textures, 114 model material textures, and 19 original shape models for direct browser use.
+- The new-server layout will be a versioned JSON representation of state entities, with map metadata and validation settings retained for round trips.
+- Dense shipped placements support offline defaults of 300 units for service and 80 units for backup; both remain editable because live servers supply the authoritative values.
+- Every exported ZIP now carries original-format files, `base-layout.json`, and a browser-project backup.
+- The format verification suite round-trips the 16,641-vertex Crossroads land file and all 69 state entities, and exercises the Ghidra-derived power rules.
+- Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
+- Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
+- The target GitHub repository currently has no commits, so this project will establish its initial history.
+
+## Notes
+
+This file is maintained throughout implementation so format discoveries, derived defaults, validation rules, and verification results remain auditable.
