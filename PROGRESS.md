@@ -2,6 +2,18 @@
 
 Updated: 2026-08-30
 
+## In progress — multiple base-layout states
+
+- [x] Define separate terrain and base-state persistence boundaries while retaining legacy `entities.jsonl` loading.
+- [x] Add a versioned `base-layouts.json` collection with multiple named layouts and user `key=value` metadata.
+- [x] Make repository Save/Publish mode-aware so Base Builder never rewrites terrain or map metadata.
+- [x] Add layout create/duplicate/delete/switch/name/metadata controls.
+- [x] Import every original state variant as its own named layout and retain the source filename as metadata.
+- [x] Add Ctrl-held XYZ translation and pitch/roll/yaw 3D transform handles for selected placed models.
+- [x] Extend original-map, package, repository, native bridge, and loopback-service regression coverage.
+- [x] Complete headed desktop verification and build the self-contained v0.5.0 archive.
+- [ ] Commit to `main` and publish/verify the v0.5.0 release.
+
 ## Completed
 
 - [x] Confirmed the target GitHub repository exists and is empty.
@@ -77,6 +89,11 @@ Updated: 2026-08-30
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
 - The editor is committed and pushed to the `main` branch of `blackwatergaming/wulfram-mapeditor`.
 - The canonical source suite converts, reloads, and recompiles all 47 original maps; source ZIPs and compiled packages are deterministic for an unchanged revision.
+- Maps can now keep multiple named base layouts on one terrain. `base-layouts.json` carries the complete collection while `state`, `entities.jsonl`, and `base-layout.json` remain active-layout compatibility outputs.
+- Repository writes are scoped by editor mode and covered by byte-for-byte tests: Base Builder cannot rewrite terrain/map source, and Terrain Editor cannot rewrite base-state source.
+- Selected models expose standard Three.js transform controls only while Ctrl is held: world-space XYZ movement or local pitch/roll/yaw rotation, committed as one undoable edit per drag.
+- The packaged v0.5.0 headed probe at DPR 2 created and annotated a second base layout, attached both transform modes, performed a real yaw-ring drag from 0° to 36.55°, decoded an original texture pixel, showed no document overflow or runtime/network errors, and held 60 FPS during camera motion.
+- The local v0.5.0 self-contained archive is 66,759,485 bytes with SHA-256 `03806391e24fd2d41ece9eb33b3fc73ca15454659440ba7b7d841ca7cf23e625`.
 - `blackwatergaming/wulfram-maps` now contains 47 canonical map directories on `main`; release v0.1.0 contains 47 map packages, one collection archive, and `SHA256SUMS.txt`.
 - The loopback service returned all 47 maps and loaded Crossroads with 16,641 terrain vertices and 69 entities; the editor route returned HTTP 200.
 - A headed Edge WebView2 run at Windows 200% scaling reported a 1280×730 CSS viewport at DPR 2 with no document overflow. Idle, nine-model template-preview, and active keyboard-camera timing held 59–60 FPS.

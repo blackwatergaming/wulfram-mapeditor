@@ -6,8 +6,16 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { readMapArchive } from '../lib/map-package.ts';
-import { MAP_SOURCE_FILES } from '../lib/map-source.ts';
-import { createBlankProject } from '../lib/wulfram.ts';
+import {
+  MAP_BASE_SOURCE_FILES,
+  MAP_SOURCE_FILES,
+  MAP_TERRAIN_SOURCE_FILES,
+} from '../lib/map-source.ts';
+import {
+  activateBaseLayout,
+  createBlankProject,
+  synchronizeActiveBaseLayout,
+} from '../lib/wulfram.ts';
 import {
   buildReleaseArtifacts,
   compileRepositoryMap,
@@ -24,6 +32,7 @@ import { startRepositoryServer } from '../tools/maps-repository-server.mjs';
 function fixtureProject() {
   const project = createBlankProject('Git Diff Test', 3);
   project.updatedAt = '2000-01-01T00:00:00.000Z';
+  project.baseLayouts[0].updatedAt = project.updatedAt;
   project.terrain.worldWidth = 200;
   project.terrain.worldHeight = 160;
   project.terrain.textureIds[4] = 3;
@@ -114,6 +123,7 @@ void test('repository source save, list, load, compile, and release bundle form 
       'tagmap',
       'tagmap2',
       'base-layout.json',
+      'base-layouts.json',
       'wulfram-project.json',
     ]),
   );
@@ -153,12 +163,119 @@ void test('repository map slugs cannot escape maps/', () => {
   }
 });
 
+void test('base-only saves persist multiple named layouts and never rewrite terrain files', (context) => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'wulfram-layout-save-test-'));
+  context.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repository, '.git'));
+  saveRepositoryMap(repository, 'git-diff-test', fixtureProject());
+  const directory = path.join(repository, 'maps', 'git-diff-test');
+  const terrainBefore = Object.fromEntries(MAP_TERRAIN_SOURCE_FILES.map((fileName) => [
+    fileName,
+    fs.readFileSync(path.join(directory, fileName)),
+  ]));
+  const baseBefore = Object.fromEntries(MAP_BASE_SOURCE_FILES.map((fileName) => [
+    fileName,
+    fs.readFileSync(path.join(directory, fileName)),
+  ]));
+
+  const changed = loadRepositoryMap(repository, 'git-diff-test');
+  changed.name = 'This map-name change must stay unsaved';
+  changed.terrain.heights[4] = 999;
+  changed.terrain.textureIds[4] = 17;
+  changed.terrain.tagmap2.push('must-not-save');
+  changed.baseLayouts[0].name = 'Competitive';
+  changed.baseLayouts[0].metadata = { author: 'Blackwater', ruleset: 'ranked' };
+  changed.entities.push({
+    id: 'gun-a', token: 'g', team: 1,
+    position: [80, 70, 13], rotation: [0, 0, 0], active: 1,
+  });
+  synchronizeActiveBaseLayout(changed, '2026-08-30T21:00:00.000Z');
+  changed.baseLayouts.push({
+    id: 'night-raid',
+    name: 'Night Raid',
+    metadata: { lighting: 'night', objective: 'uplink' },
+    entities: [{
+      id: 'uplink-b', token: 'u', team: 0,
+      position: [120, 90, 11], rotation: [0, 0, 1.5], active: 1,
+    }],
+    validation: { ...changed.validation, minSpacing: 12 },
+    updatedAt: '2026-08-30T21:01:00.000Z',
+  });
+  activateBaseLayout(changed, 'night-raid');
+
+  const saved = saveRepositoryMap(repository, 'git-diff-test', changed, { scope: 'base' });
+  assert.deepEqual(saved.writtenFiles, [...MAP_BASE_SOURCE_FILES]);
+  for (const fileName of MAP_TERRAIN_SOURCE_FILES) {
+    assert.deepEqual(
+      fs.readFileSync(path.join(directory, fileName)),
+      terrainBefore[fileName],
+      `${fileName} is byte-identical after a base-only save`,
+    );
+  }
+  assert.ok(MAP_BASE_SOURCE_FILES.some((fileName) =>
+    !fs.readFileSync(path.join(directory, fileName)).equals(baseBefore[fileName])));
+
+  const loaded = loadRepositoryMap(repository, 'git-diff-test');
+  assert.equal(loaded.name, 'Git Diff Test');
+  assert.equal(loaded.terrain.heights[4], 12.345678);
+  assert.equal(loaded.baseLayouts.length, 2);
+  assert.equal(loaded.activeBaseLayoutId, 'night-raid');
+  assert.equal(loaded.baseLayouts[0].name, 'Competitive');
+  assert.deepEqual(loaded.baseLayouts[0].metadata, { author: 'Blackwater', ruleset: 'ranked' });
+  assert.deepEqual(loaded.baseLayouts[1].metadata, { lighting: 'night', objective: 'uplink' });
+  assert.deepEqual(loaded.entities.map((entity) => entity.id), ['uplink-b']);
+  assert.equal(loaded.validation.minSpacing, 12);
+});
+
+void test('terrain-only saves preserve every existing base-state byte', (context) => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'wulfram-terrain-save-test-'));
+  context.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repository, '.git'));
+  saveRepositoryMap(repository, 'git-diff-test', fixtureProject());
+  const directory = path.join(repository, 'maps', 'git-diff-test');
+  const baseBefore = Object.fromEntries(MAP_BASE_SOURCE_FILES.map((fileName) => [
+    fileName,
+    fs.readFileSync(path.join(directory, fileName)),
+  ]));
+  const changed = loadRepositoryMap(repository, 'git-diff-test');
+  changed.terrain.heights[0] = 88;
+  changed.entities = [];
+  changed.baseLayouts[0].name = 'Must not save';
+  const saved = saveRepositoryMap(repository, 'git-diff-test', changed, { scope: 'terrain' });
+  assert.deepEqual(saved.writtenFiles, [...MAP_TERRAIN_SOURCE_FILES]);
+  for (const fileName of MAP_BASE_SOURCE_FILES) {
+    assert.deepEqual(
+      fs.readFileSync(path.join(directory, fileName)),
+      baseBefore[fileName],
+      `${fileName} is byte-identical after a terrain-only save`,
+    );
+  }
+  const loaded = loadRepositoryMap(repository, 'git-diff-test');
+  assert.equal(loaded.terrain.heights[0], 88);
+  assert.equal(loaded.baseLayouts[0].name, 'Default');
+  assert.deepEqual(loaded.entities.map((entity) => entity.id), ['power-1']);
+});
+
+void test('base-only save requires an existing saved terrain', () => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'wulfram-base-first-test-'));
+  try {
+    fs.mkdirSync(path.join(repository, '.git'));
+    assert.throws(
+      () => saveRepositoryMap(repository, 'new-map', fixtureProject(), { scope: 'base' }),
+      /save.*terrain.*before.*base layouts/i,
+    );
+    assert.equal(fs.existsSync(path.join(repository, 'maps', 'new-map')), false);
+  } finally {
+    fs.rmSync(repository, { recursive: true, force: true });
+  }
+});
+
 void test('publishing creates a feature branch, one map commit, a push, and a PR into main', (context) => {
   const { repository, remote } = realRepository(context);
   const changed = fixtureProject();
   changed.terrain.heights[4] = 44.5;
   changed.updatedAt = '2026-08-30T20:15:00.000Z';
-  saveRepositoryMap(repository, 'git-diff-test', changed);
+  saveRepositoryMap(repository, 'git-diff-test', changed, { scope: 'terrain' });
 
   const calls = [];
   const result = publishRepositoryMaps(repository, ['git-diff-test'], {
@@ -241,6 +358,25 @@ void test('loopback service exposes health, setup diagnostics, catalogs, and bra
   assert.equal(catalog.defaultBranch, 'main');
   assert.deepEqual(catalog.branches, ['main']);
   assert.deepEqual(catalog.maps.map((map) => map.slug), ['git-diff-test']);
+  assert.equal(catalog.maps[0].layouts, 1);
+
+  const loaded = await fetch(`${base}/maps/git-diff-test`).then((response) => response.json());
+  const mapPath = path.join(repository, 'maps', 'git-diff-test', 'map.json');
+  const mapBefore = fs.readFileSync(mapPath);
+  loaded.project.name = 'Unsaved through base scope';
+  loaded.project.baseLayouts[0].name = 'Service Layout';
+  loaded.project.baseLayouts[0].metadata = { endpoint: 'loopback' };
+  const saved = await fetch(`${base}/maps/git-diff-test`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: loaded.project, scope: 'base' }),
+  }).then((response) => response.json());
+  assert.equal(saved.scope, 'base');
+  assert.deepEqual(saved.writtenFiles, [...MAP_BASE_SOURCE_FILES]);
+  assert.deepEqual(fs.readFileSync(mapPath), mapBefore);
+  assert.equal(saved.project.name, 'Git Diff Test');
+  assert.equal(saved.project.baseLayouts[0].name, 'Service Layout');
+  assert.deepEqual(saved.project.baseLayouts[0].metadata, { endpoint: 'loopback' });
 
   const switched = await fetch(`${base}/branches`, {
     method: 'POST',

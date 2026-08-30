@@ -8,7 +8,10 @@ import JSZip from 'jszip';
 
 import { createMapArchive } from '../lib/map-package.ts';
 import {
+  MAP_BASE_SOURCE_FILES,
+  MAP_REQUIRED_SOURCE_FILES,
   MAP_SOURCE_FILES,
+  MAP_TERRAIN_SOURCE_FILES,
   createMapSourceFiles,
   parseMapSourceFiles,
 } from '../lib/map-source.ts';
@@ -76,12 +79,14 @@ function sourceDirectory(repository, slug) {
 export function readMapSourceDirectory(repository, slug) {
   const directory = sourceDirectory(repository, slug);
   const files = {};
-  for (const fileName of MAP_SOURCE_FILES) {
+  for (const fileName of MAP_REQUIRED_SOURCE_FILES) {
     const file = path.join(directory, fileName);
     if (!fs.existsSync(file))
       throw new Error(`${slug} is missing ${fileName}.`);
     files[fileName] = fs.readFileSync(file, 'utf8');
   }
+  const layouts = path.join(directory, 'base-layouts.json');
+  if (fs.existsSync(layouts)) files['base-layouts.json'] = fs.readFileSync(layouts, 'utf8');
   return files;
 }
 
@@ -105,6 +110,7 @@ export function listRepositoryMaps(repository) {
         width: project.terrain.width,
         height: project.terrain.height,
         entities: project.entities.length,
+        layouts: project.baseLayouts.length,
       };
     })
     .sort(
@@ -270,21 +276,39 @@ export function switchRepositoryBranch(repository, requestedBranch, create = fal
   return repositoryGitInfo(resolved);
 }
 
-export function saveRepositoryMap(repository, requestedSlug, project) {
+export function saveRepositoryMap(repository, requestedSlug, project, options = {}) {
   const resolved = assertMapsRepository(repository);
   const slug = assertMapSlug(requestedSlug);
+  const scope = options.scope ?? 'all';
+  if (!['all', 'terrain', 'base'].includes(scope)) throw new Error(`Unknown map save scope: ${scope}`);
   const canonicalFiles = createMapSourceFiles(project);
-  const canonicalProject = parseMapSourceFiles(canonicalFiles);
   const directory = sourceDirectory(resolved, slug);
+  const exists = fs.existsSync(directory);
+  if (scope === 'base') {
+    if (!exists || MAP_TERRAIN_SOURCE_FILES.some((fileName) => !fs.existsSync(path.join(directory, fileName)))) {
+      throw new Error(`Map ${slug} has no saved terrain. Switch to Terrain mode and save it before saving base layouts.`);
+    }
+  }
   fs.mkdirSync(directory, { recursive: true });
-  for (const fileName of MAP_SOURCE_FILES) {
+  const selectedFiles = scope === 'all'
+    ? [...MAP_SOURCE_FILES]
+    : scope === 'terrain'
+      ? [...MAP_TERRAIN_SOURCE_FILES]
+      : [...MAP_BASE_SOURCE_FILES];
+  if (scope === 'terrain') {
+    for (const fileName of MAP_BASE_SOURCE_FILES) {
+      if (!fs.existsSync(path.join(directory, fileName))) selectedFiles.push(fileName);
+    }
+  }
+  for (const fileName of selectedFiles) {
     fs.writeFileSync(
       path.join(directory, fileName),
       canonicalFiles[fileName],
       'utf8',
     );
   }
-  return { slug, project: canonicalProject, directory };
+  const canonicalProject = loadRepositoryMap(resolved, slug);
+  return { slug, project: canonicalProject, directory, scope, writtenFiles: selectedFiles };
 }
 
 export async function compileRepositoryMap(repository, slug, outputDirectory) {

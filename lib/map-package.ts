@@ -1,12 +1,14 @@
 import JSZip from 'jszip';
 
 import {
+  cloneProject,
   serializeLand,
   serializeLines,
   serializeState,
   toBaseLayout,
   type WulframProject,
 } from './wulfram.ts';
+import { serializeBaseLayoutCollection } from './map-source.ts';
 
 const ARCHIVE_DATE = new Date('2000-01-01T00:00:00.000Z');
 
@@ -16,6 +18,7 @@ export const MAP_ARCHIVE_FILES = [
   'tagmap',
   'tagmap2',
   'base-layout.json',
+  'base-layouts.json',
   'wulfram-project.json',
 ] as const;
 
@@ -29,13 +32,15 @@ export function safeMapName(name: string): string {
 }
 
 export function createMapArchiveFiles(project: WulframProject): Record<(typeof MAP_ARCHIVE_FILES)[number], string> {
+  const canonical = cloneProject(project);
   return {
-    land: serializeLand(project.terrain),
-    state: serializeState(project.entities),
-    tagmap: serializeLines(project.terrain.tagmap),
-    tagmap2: serializeLines(project.terrain.tagmap2),
-    'base-layout.json': `${JSON.stringify(toBaseLayout(project), null, 2)}\n`,
-    'wulfram-project.json': `${JSON.stringify(project)}\n`,
+    land: serializeLand(canonical.terrain),
+    state: serializeState(canonical.entities),
+    tagmap: serializeLines(canonical.terrain.tagmap),
+    tagmap2: serializeLines(canonical.terrain.tagmap2),
+    'base-layout.json': `${JSON.stringify(toBaseLayout(canonical), null, 2)}\n`,
+    'base-layouts.json': serializeBaseLayoutCollection(canonical),
+    'wulfram-project.json': `${JSON.stringify(canonical)}\n`,
   };
 }
 

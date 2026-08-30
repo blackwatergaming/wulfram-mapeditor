@@ -9,11 +9,11 @@ Build locally with a .NET 9 SDK:
 
 ```bash
 npm ci
-npm run build:desktop -- --version 0.4.0
+npm run build:desktop -- --version 0.5.0
 ```
 
 The resulting artifact is
-`dist/desktop/WulframForge-0.4.0-win-x64-self-contained.zip`. The executable
+`dist/desktop/WulframForge-0.5.0-win-x64-self-contained.zip`. The executable
 extracts its hashed web payload into the current user's local application-data
 folder, maps it to `https://wulfram-forge.local`, and loads that origin in
 WebView2. This preserves `localStorage`, downloads, WebGL, and keyboard controls
@@ -39,7 +39,7 @@ official x64 Fixed Version package, then set:
 
 ```powershell
 $env:WEBVIEW2_FIXED_RUNTIME_DIR = 'C:\path\to\fixed-runtime'
-npm run build:desktop -- --version 0.4.0
+npm run build:desktop -- --version 0.5.0
 ```
 
 The build places it at `WulframForge/WebView2Runtime/` and labels the artifact

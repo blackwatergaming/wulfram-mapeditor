@@ -28,6 +28,19 @@
         }
       }
     },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
     "validation": {
       "type": "object",
       "additionalProperties": false,

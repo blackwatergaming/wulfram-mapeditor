@@ -1,7 +1,12 @@
 import JSZip from 'jszip';
 
 import {
+  DEFAULT_BASE_LAYOUT_ID,
   DEFAULT_VALIDATION,
+  cloneProject,
+  synchronizeActiveBaseLayout,
+  type BaseLayoutMetadata,
+  type BaseLayoutState,
   type StateEntity,
   type ValidationSettings,
   type Vec3,
@@ -10,8 +15,21 @@ import {
 
 const ARCHIVE_DATE = new Date('2000-01-01T00:00:00.000Z');
 const SOURCE_SCHEMA = '../../schemas/wulfram-map-source-v1.schema.json';
+const BASE_LAYOUTS_SCHEMA = 'https://raw.githubusercontent.com/blackwatergaming/wulfram-mapeditor/main/public/schemas/wulfram-base-layout-collection-v1.schema.json';
 
-export const MAP_SOURCE_FILES = [
+export const MAP_TERRAIN_SOURCE_FILES = [
+  'map.json',
+  'terrain.tsv',
+  'tagmap.txt',
+  'tagmap2.txt',
+] as const;
+
+export const MAP_BASE_SOURCE_FILES = [
+  'entities.jsonl',
+  'base-layouts.json',
+] as const;
+
+export const MAP_REQUIRED_SOURCE_FILES = [
   'map.json',
   'terrain.tsv',
   'entities.jsonl',
@@ -19,8 +37,19 @@ export const MAP_SOURCE_FILES = [
   'tagmap2.txt',
 ] as const;
 
+export const MAP_SOURCE_FILES = [
+  'map.json',
+  'terrain.tsv',
+  'entities.jsonl',
+  'tagmap.txt',
+  'tagmap2.txt',
+  'base-layouts.json',
+] as const;
+
 export type MapSourceFileName = (typeof MAP_SOURCE_FILES)[number];
-export type MapSourceFiles = Record<MapSourceFileName, string>;
+export type MapSourceFiles = Partial<Record<MapSourceFileName, string>>
+  & Record<(typeof MAP_REQUIRED_SOURCE_FILES)[number], string>;
+export type CompleteMapSourceFiles = Record<MapSourceFileName, string>;
 
 export interface MapSourceManifest {
   $schema: string;
@@ -41,6 +70,14 @@ export interface MapSourceArchive {
   root: string;
   files: MapSourceFiles;
   project: WulframProject;
+}
+
+export interface BaseLayoutCollectionV1 {
+  $schema: string;
+  format: 'wulfram-base-layout-collection';
+  version: 1;
+  activeLayoutId: string;
+  layouts: BaseLayoutState[];
 }
 
 function assertRecord(
@@ -116,21 +153,20 @@ function parseSourceLines(value: string): string[] {
   return lines;
 }
 
-function sourceEntity(entity: StateEntity): Record<string, unknown> {
+function sourceEntity(entity: StateEntity): StateEntity {
   return {
     id: entity.id,
     token: entity.token,
     ...(entity.subtype === undefined ? {} : { subtype: entity.subtype }),
     team: Math.trunc(entity.team),
-    position: entity.position.map((value) => Number(sourceNumber(value))),
-    rotation: entity.rotation.map((value) => Number(sourceNumber(value))),
+    position: entity.position.map((value) => Number(sourceNumber(value))) as Vec3,
+    rotation: entity.rotation.map((value) => Number(sourceNumber(value))) as Vec3,
     active: Math.trunc(entity.active),
     ...(entity.raw === undefined ? {} : { raw: entity.raw }),
   };
 }
 
-function parseSourceEntity(value: unknown, line: number): StateEntity {
-  const context = `entities.jsonl line ${line}`;
+function parseSourceEntity(value: unknown, context: string): StateEntity {
   assertRecord(value, context);
   const token = text(value.token, `${context} token`);
   if (!token.length) throw new Error(`${context} token cannot be empty.`);
@@ -152,11 +188,110 @@ function parseSourceEntity(value: unknown, line: number): StateEntity {
   };
 }
 
-export function createMapSourceFiles(project: WulframProject): MapSourceFiles {
-  const expectedVertices = project.terrain.width * project.terrain.height;
+function sourceMetadata(metadata: BaseLayoutMetadata): BaseLayoutMetadata {
+  return Object.fromEntries(
+    Object.entries(metadata).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function parseMetadata(value: unknown, context: string): BaseLayoutMetadata {
+  assertRecord(value, context);
+  const metadata: BaseLayoutMetadata = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!key.length) throw new Error(`${context} keys cannot be empty.`);
+    metadata[key] = text(entry, `${context}.${key}`);
+  }
+  return sourceMetadata(metadata);
+}
+
+function validateEntityIds(entities: StateEntity[], context: string): void {
+  const ids = new Set<string>();
+  for (const [index, entity] of entities.entries()) {
+    if (!entity.id.length || ids.has(entity.id)) {
+      throw new Error(`${context} entity ${index + 1} has an empty or duplicate id.`);
+    }
+    ids.add(entity.id);
+  }
+}
+
+export function createBaseLayoutCollection(project: WulframProject): BaseLayoutCollectionV1 {
+  const canonical = cloneProject(project);
+  synchronizeActiveBaseLayout(canonical);
+  return {
+    $schema: BASE_LAYOUTS_SCHEMA,
+    format: 'wulfram-base-layout-collection',
+    version: 1,
+    activeLayoutId: canonical.activeBaseLayoutId,
+    layouts: canonical.baseLayouts.map((layout) => ({
+      id: layout.id,
+      name: layout.name,
+      metadata: sourceMetadata(layout.metadata),
+      entities: layout.entities.map(sourceEntity),
+      validation: { ...layout.validation },
+      updatedAt: layout.updatedAt,
+    })),
+  };
+}
+
+export function serializeBaseLayoutCollection(project: WulframProject): string {
+  return `${JSON.stringify(createBaseLayoutCollection(project), null, 2)}\n`;
+}
+
+export function parseBaseLayoutCollection(textValue: string): {
+  activeLayoutId: string;
+  layouts: BaseLayoutState[];
+} {
+  let value: unknown;
+  try {
+    value = JSON.parse(textValue);
+  } catch (error) {
+    throw new Error(`base-layouts.json is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  assertRecord(value, 'base-layouts.json');
+  if (value.format !== 'wulfram-base-layout-collection' || value.version !== 1) {
+    throw new Error('Unsupported base layout collection. Expected wulfram-base-layout-collection v1.');
+  }
+  if (!Array.isArray(value.layouts) || value.layouts.length === 0) {
+    throw new Error('base-layouts.json must contain at least one layout.');
+  }
+  const seenIds = new Set<string>();
+  const layouts = value.layouts.map((entry, layoutIndex): BaseLayoutState => {
+    const context = `base-layouts.json layout ${layoutIndex + 1}`;
+    assertRecord(entry, context);
+    const id = text(entry.id, `${context} id`).trim();
+    const name = text(entry.name, `${context} name`).trim();
+    if (!id || seenIds.has(id)) throw new Error(`${context} has an empty or duplicate id.`);
+    if (!name) throw new Error(`${context} name cannot be empty.`);
+    seenIds.add(id);
+    if (!Array.isArray(entry.entities)) throw new Error(`${context} entities must be an array.`);
+    const entities = entry.entities.map((entity, entityIndex) =>
+      parseSourceEntity(entity, `${context} entity ${entityIndex + 1}`),
+    );
+    validateEntityIds(entities, context);
+    const updatedAt = text(entry.updatedAt, `${context} updatedAt`);
+    if (Number.isNaN(Date.parse(updatedAt))) throw new Error(`${context} updatedAt must be an ISO-compatible date string.`);
+    return {
+      id,
+      name,
+      metadata: parseMetadata(entry.metadata ?? {}, `${context} metadata`),
+      entities,
+      validation: entry.validation === undefined
+        ? { ...DEFAULT_VALIDATION }
+        : validationSettings(entry.validation),
+      updatedAt,
+    };
+  });
+  const activeLayoutId = text(value.activeLayoutId, 'base-layouts.json activeLayoutId');
+  if (!seenIds.has(activeLayoutId)) throw new Error('base-layouts.json activeLayoutId does not identify a layout.');
+  return { activeLayoutId, layouts };
+}
+
+export function createMapSourceFiles(project: WulframProject): CompleteMapSourceFiles {
+  const canonical = cloneProject(project);
+  const expectedVertices = canonical.terrain.width * canonical.terrain.height;
   if (
-    project.terrain.heights.length !== expectedVertices ||
-    project.terrain.textureIds.length !== expectedVertices
+    canonical.terrain.heights.length !== expectedVertices ||
+    canonical.terrain.textureIds.length !== expectedVertices
   ) {
     throw new Error(
       `Terrain arrays must each contain ${expectedVertices} vertices.`,
@@ -167,22 +302,22 @@ export function createMapSourceFiles(project: WulframProject): MapSourceFiles {
     $schema: SOURCE_SCHEMA,
     format: 'wulfram-map-source',
     version: 1,
-    name: project.name,
+    name: canonical.name,
     terrain: {
-      width: project.terrain.width,
-      height: project.terrain.height,
-      worldWidth: project.terrain.worldWidth,
-      worldHeight: project.terrain.worldHeight,
+      width: canonical.terrain.width,
+      height: canonical.terrain.height,
+      worldWidth: canonical.terrain.worldWidth,
+      worldHeight: canonical.terrain.worldHeight,
     },
-    validation: { ...project.validation },
-    updatedAt: project.updatedAt,
+    validation: { ...canonical.validation },
+    updatedAt: canonical.updatedAt,
   };
   const terrainRows = ['x\ty\ttexture\theight'];
-  for (let y = 0; y < project.terrain.height; y += 1) {
-    for (let x = 0; x < project.terrain.width; x += 1) {
-      const index = y * project.terrain.width + x;
+  for (let y = 0; y < canonical.terrain.height; y += 1) {
+    for (let x = 0; x < canonical.terrain.width; x += 1) {
+      const index = y * canonical.terrain.width + x;
       terrainRows.push(
-        `${x}\t${y}\t${Math.max(0, Math.trunc(project.terrain.textureIds[index] ?? 0))}\t${sourceNumber(project.terrain.heights[index] ?? 0)}`,
+        `${x}\t${y}\t${Math.max(0, Math.trunc(canonical.terrain.textureIds[index] ?? 0))}\t${sourceNumber(canonical.terrain.heights[index] ?? 0)}`,
       );
     }
   }
@@ -191,17 +326,18 @@ export function createMapSourceFiles(project: WulframProject): MapSourceFiles {
     'map.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'terrain.tsv': `${terrainRows.join('\n')}\n`,
     'entities.jsonl': sourceLines(
-      project.entities.map((entity) => JSON.stringify(sourceEntity(entity))),
+      canonical.entities.map((entity) => JSON.stringify(sourceEntity(entity))),
     ),
-    'tagmap.txt': sourceLines(project.terrain.tagmap),
-    'tagmap2.txt': sourceLines(project.terrain.tagmap2),
+    'tagmap.txt': sourceLines(canonical.terrain.tagmap),
+    'tagmap2.txt': sourceLines(canonical.terrain.tagmap2),
+    'base-layouts.json': serializeBaseLayoutCollection(canonical),
   };
 }
 
 export function parseMapSourceFiles(
   files: Partial<Record<MapSourceFileName, string>>,
 ): WulframProject {
-  for (const fileName of MAP_SOURCE_FILES) {
+  for (const fileName of MAP_REQUIRED_SOURCE_FILES) {
     if (typeof files[fileName] !== 'string')
       throw new Error(`Map source is missing ${fileName}.`);
   }
@@ -293,7 +429,7 @@ export function parseMapSourceFiles(
         `entities.jsonl line ${index + 1} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const entity = parseSourceEntity(value, index + 1);
+    const entity = parseSourceEntity(value, `entities.jsonl line ${index + 1}`);
     if (!entity.id.length || ids.has(entity.id))
       throw new Error(
         `entities.jsonl line ${index + 1} has an empty or duplicate id.`,
@@ -305,7 +441,16 @@ export function parseMapSourceFiles(
   const updatedAt = text(rawManifest.updatedAt, 'updatedAt');
   if (Number.isNaN(Date.parse(updatedAt)))
     throw new Error('updatedAt must be an ISO-compatible date string.');
-  return {
+  const fallbackValidation = rawManifest.validation === undefined
+    ? { ...DEFAULT_VALIDATION }
+    : validationSettings(rawManifest.validation);
+  const collection = typeof files['base-layouts.json'] === 'string'
+    ? parseBaseLayoutCollection(files['base-layouts.json'])
+    : undefined;
+  const activeLayout = collection?.layouts.find(
+    (layout) => layout.id === collection.activeLayoutId,
+  );
+  const project: WulframProject = {
     format: 'wulfram-map-project',
     version: 1,
     name: text(rawManifest.name, 'name'),
@@ -319,13 +464,20 @@ export function parseMapSourceFiles(
       tagmap: parseSourceLines(files['tagmap.txt']!),
       tagmap2: parseSourceLines(files['tagmap2.txt']!),
     },
-    entities,
-    validation:
-      rawManifest.validation === undefined
-        ? { ...DEFAULT_VALIDATION }
-        : validationSettings(rawManifest.validation),
+    entities: activeLayout ? activeLayout.entities : entities,
+    validation: activeLayout ? activeLayout.validation : fallbackValidation,
+    baseLayouts: collection?.layouts ?? [{
+      id: DEFAULT_BASE_LAYOUT_ID,
+      name: 'Default',
+      metadata: {},
+      entities,
+      validation: fallbackValidation,
+      updatedAt,
+    }],
+    activeBaseLayoutId: collection?.activeLayoutId ?? DEFAULT_BASE_LAYOUT_ID,
     updatedAt,
   };
+  return synchronizeActiveBaseLayout(project);
 }
 
 export async function createMapSourceArchive(
@@ -361,9 +513,9 @@ export async function readMapSourceArchive(
     .sort();
   for (const manifestPath of candidates) {
     const root = manifestPath.replace(/\\/g, '/').slice(0, -'/map.json'.length);
-    const files = {} as MapSourceFiles;
+    const files: Partial<Record<MapSourceFileName, string>> = {};
     let complete = true;
-    for (const fileName of MAP_SOURCE_FILES) {
+    for (const fileName of MAP_REQUIRED_SOURCE_FILES) {
       const entry = zip.file(`${root}/${fileName}`);
       if (!entry) {
         complete = false;
@@ -371,7 +523,15 @@ export async function readMapSourceArchive(
       }
       files[fileName] = await entry.async('text');
     }
-    if (complete) return { root, files, project: parseMapSourceFiles(files) };
+    if (complete) {
+      const layouts = zip.file(`${root}/base-layouts.json`);
+      if (layouts) files['base-layouts.json'] = await layouts.async('text');
+      return {
+        root,
+        files: files as MapSourceFiles,
+        project: parseMapSourceFiles(files),
+      };
+    }
   }
   return undefined;
 }

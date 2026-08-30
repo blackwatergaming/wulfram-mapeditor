@@ -29,6 +29,17 @@ export interface ValidationSettings {
   minSpacing: number;
 }
 
+export type BaseLayoutMetadata = Record<string, string>;
+
+export interface BaseLayoutState {
+  id: string;
+  name: string;
+  metadata: BaseLayoutMetadata;
+  entities: StateEntity[];
+  validation: ValidationSettings;
+  updatedAt: string;
+}
+
 export interface WulframProject {
   format: 'wulfram-map-project';
   version: 1;
@@ -36,6 +47,8 @@ export interface WulframProject {
   terrain: TerrainData;
   entities: StateEntity[];
   validation: ValidationSettings;
+  baseLayouts: BaseLayoutState[];
+  activeBaseLayoutId: string;
   updatedAt: string;
 }
 
@@ -224,6 +237,8 @@ export const MODEL_WORLD_SCALE = 2.1;
 /** Visible air gap retained below terrain-conformed structures. */
 export const STRUCTURE_BOTTOM_MARGIN = 1.25;
 
+export const DEFAULT_BASE_LAYOUT_ID = 'default';
+
 export function createId(prefix = 'unit'): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -231,8 +246,92 @@ export function createId(prefix = 'unit'): string {
   return `${prefix}-${random}`;
 }
 
+function cloneStateEntities(entities: StateEntity[]): StateEntity[] {
+  return entities.map((entity) => ({
+    ...entity,
+    position: [...entity.position] as Vec3,
+    rotation: [...entity.rotation] as Vec3,
+  }));
+}
+
+function normalizedLayoutMetadata(value: unknown): BaseLayoutMetadata {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, entry]) => key.length > 0 && typeof entry === 'string')
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+/**
+ * Upgrades legacy single-state projects in place and makes the top-level
+ * entities/validation fields the editable projection of the active layout.
+ */
+export function synchronizeActiveBaseLayout(
+  project: WulframProject,
+  updatedAt?: string,
+): WulframProject {
+  if (!Array.isArray(project.baseLayouts) || project.baseLayouts.length === 0) {
+    project.baseLayouts = [{
+      id: DEFAULT_BASE_LAYOUT_ID,
+      name: 'Default',
+      metadata: {},
+      entities: cloneStateEntities(project.entities ?? []),
+      validation: { ...DEFAULT_VALIDATION, ...project.validation },
+      updatedAt: project.updatedAt,
+    }];
+    project.activeBaseLayoutId = DEFAULT_BASE_LAYOUT_ID;
+  }
+
+  const seen = new Set<string>();
+  project.baseLayouts = project.baseLayouts.map((layout, index) => {
+    let id = typeof layout.id === 'string' && layout.id.trim()
+      ? layout.id.trim()
+      : index === 0 ? DEFAULT_BASE_LAYOUT_ID : `layout-${index + 1}`;
+    while (seen.has(id)) id = `${id}-${index + 1}`;
+    seen.add(id);
+    return {
+      id,
+      name: typeof layout.name === 'string' && layout.name.trim()
+        ? layout.name.trim()
+        : `Layout ${index + 1}`,
+      metadata: normalizedLayoutMetadata(layout.metadata),
+      entities: cloneStateEntities(Array.isArray(layout.entities) ? layout.entities : []),
+      validation: { ...DEFAULT_VALIDATION, ...project.validation, ...layout.validation },
+      updatedAt: typeof layout.updatedAt === 'string' && !Number.isNaN(Date.parse(layout.updatedAt))
+        ? layout.updatedAt
+        : project.updatedAt,
+    };
+  });
+
+  if (!seen.has(project.activeBaseLayoutId)) {
+    project.activeBaseLayoutId = project.baseLayouts[0].id;
+  }
+  const active = project.baseLayouts.find((layout) => layout.id === project.activeBaseLayoutId)!;
+  active.entities = cloneStateEntities(project.entities ?? active.entities);
+  active.validation = { ...DEFAULT_VALIDATION, ...project.validation };
+  if (updatedAt) active.updatedAt = updatedAt;
+  return project;
+}
+
+export function activeBaseLayout(project: WulframProject): BaseLayoutState {
+  synchronizeActiveBaseLayout(project);
+  return project.baseLayouts.find((layout) => layout.id === project.activeBaseLayoutId)!;
+}
+
+export function activateBaseLayout(project: WulframProject, id: string): WulframProject {
+  synchronizeActiveBaseLayout(project);
+  const layout = project.baseLayouts.find((candidate) => candidate.id === id);
+  if (!layout) throw new Error(`Unknown base layout: ${id}`);
+  project.activeBaseLayoutId = layout.id;
+  project.entities = cloneStateEntities(layout.entities);
+  project.validation = { ...layout.validation };
+  return project;
+}
+
 export function createBlankProject(name = 'Untitled map', size = 129): WulframProject {
   const count = size * size;
+  const updatedAt = new Date().toISOString();
   return {
     format: 'wulfram-map-project',
     version: 1,
@@ -249,7 +348,16 @@ export function createBlankProject(name = 'Untitled map', size = 129): WulframPr
     },
     entities: [],
     validation: { ...DEFAULT_VALIDATION },
-    updatedAt: new Date().toISOString(),
+    baseLayouts: [{
+      id: DEFAULT_BASE_LAYOUT_ID,
+      name: 'Default',
+      metadata: {},
+      entities: [],
+      validation: { ...DEFAULT_VALIDATION },
+      updatedAt,
+    }],
+    activeBaseLayoutId: DEFAULT_BASE_LAYOUT_ID,
+    updatedAt,
   };
 }
 
@@ -687,6 +795,11 @@ export interface BaseLayoutV1 {
     coordinateSystem: 'wulfram-world-xy-z-up';
     worldSize: { x: number; y: number };
   };
+  layout: {
+    id: string;
+    name: string;
+    metadata: BaseLayoutMetadata;
+  };
   validation: ValidationSettings;
   units: Array<{
     id: string;
@@ -701,17 +814,24 @@ export interface BaseLayoutV1 {
 }
 
 export function toBaseLayout(project: WulframProject): BaseLayoutV1 {
+  const canonical = cloneProject(project);
+  const layout = activeBaseLayout(canonical);
   return {
     $schema: 'https://raw.githubusercontent.com/blackwatergaming/wulfram-mapeditor/main/public/schemas/wulfram-base-layout-v1.schema.json',
     format: 'wulfram-base-layout',
     version: 1,
     map: {
-      name: project.name,
+      name: canonical.name,
       coordinateSystem: 'wulfram-world-xy-z-up',
-      worldSize: { x: project.terrain.worldWidth, y: project.terrain.worldHeight },
+      worldSize: { x: canonical.terrain.worldWidth, y: canonical.terrain.worldHeight },
     },
-    validation: { ...project.validation },
-    units: project.entities.filter((entity) => entity.token !== '*').map((entity) => ({
+    layout: {
+      id: layout.id,
+      name: layout.name,
+      metadata: { ...layout.metadata },
+    },
+    validation: { ...canonical.validation },
+    units: canonical.entities.filter((entity) => entity.token !== '*').map((entity) => ({
       id: entity.id,
       stateToken: entity.token,
       ...(entity.subtype ? { cargoToken: entity.subtype } : {}),
@@ -724,7 +844,12 @@ export function toBaseLayout(project: WulframProject): BaseLayoutV1 {
   };
 }
 
-export function parseBaseLayout(value: unknown): { name?: string; entities: StateEntity[]; validation?: ValidationSettings } {
+export function parseBaseLayout(value: unknown): {
+  name?: string;
+  entities: StateEntity[];
+  validation?: ValidationSettings;
+  layout?: Pick<BaseLayoutState, 'id' | 'name' | 'metadata'>;
+} {
   if (!value || typeof value !== 'object') throw new Error('JSON layout must be an object.');
   const layout = value as Partial<BaseLayoutV1> & { units?: unknown[] };
   if (layout.format !== 'wulfram-base-layout' || layout.version !== 1 || !Array.isArray(layout.units)) {
@@ -752,9 +877,31 @@ export function parseBaseLayout(value: unknown): { name?: string; entities: Stat
   const validation = settings && typeof settings === 'object'
     ? { ...DEFAULT_VALIDATION, ...settings }
     : undefined;
-  return { name: layout.map?.name, entities, validation };
+  const rawLayout = layout.layout as Record<string, unknown> | undefined;
+  const parsedLayout = rawLayout && typeof rawLayout === 'object'
+    && typeof rawLayout.id === 'string' && rawLayout.id.trim()
+    && typeof rawLayout.name === 'string' && rawLayout.name.trim()
+    ? {
+        id: rawLayout.id.trim(),
+        name: rawLayout.name.trim(),
+        metadata: normalizedLayoutMetadata(rawLayout.metadata),
+      }
+    : undefined;
+  return { name: layout.map?.name, entities, validation, layout: parsedLayout };
 }
 
 export function cloneProject(project: WulframProject): WulframProject {
-  return JSON.parse(JSON.stringify(project)) as WulframProject;
+  const clone = JSON.parse(JSON.stringify(project)) as WulframProject;
+  const canonical = synchronizeActiveBaseLayout(clone);
+  return {
+    format: 'wulfram-map-project',
+    version: 1,
+    name: canonical.name,
+    terrain: canonical.terrain,
+    entities: canonical.entities,
+    validation: canonical.validation,
+    baseLayouts: canonical.baseLayouts,
+    activeBaseLayoutId: canonical.activeBaseLayoutId,
+    updatedAt: canonical.updatedAt,
+  };
 }

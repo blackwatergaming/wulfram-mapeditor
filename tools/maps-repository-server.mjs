@@ -118,10 +118,14 @@ export async function startRepositoryServer(options = {}) {
       }
       if (request.method === 'PUT' && route && !route.action) {
         const body = await readJsonBody(request);
-        const saved = saveRepositoryMap(repository, route.slug, body.project);
+        const saved = saveRepositoryMap(repository, route.slug, body.project, {
+          scope: body.scope ?? 'all',
+        });
         json(request, response, 200, {
           slug: saved.slug,
           project: saved.project,
+          scope: saved.scope,
+          writtenFiles: saved.writtenFiles,
           ...repositoryGitInfo(repository),
         });
         return;

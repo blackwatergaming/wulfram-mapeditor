@@ -167,6 +167,117 @@ if (process.env.WULFRAM_FORGE_DRAG_TEST === '1') {
   }))()`);
 }
 
+let baseLayoutTest;
+if (process.env.WULFRAM_FORGE_LAYOUT_TEST === '1') {
+  await evaluate(`(() => {
+    window.prompt = () => 'Layout State Test';
+    window.confirm = () => true;
+    [...document.querySelectorAll('.top-actions button')].find((button) => button.textContent?.includes('New'))?.click();
+    document.querySelector('.mode-switch button:nth-child(2)')?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await evaluate(`(() => {
+    [...document.querySelectorAll('.layout-actions button')].find((button) => button.textContent?.includes('New empty'))?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await evaluate(`(() => {
+    const setValue = (element, value, prototype) => {
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      setter?.call(element, value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const name = document.querySelector('[aria-label="Base layout name"]');
+    const metadata = document.querySelector('[aria-label="Base layout metadata"]');
+    if (name) setValue(name, 'Night assault', HTMLInputElement.prototype);
+    if (metadata) setValue(metadata, 'mode=assault\\nlighting=night', HTMLTextAreaElement.prototype);
+    [...document.querySelectorAll('.layout-controls button')].find((button) => button.textContent?.includes('Apply metadata'))?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  baseLayoutTest = await evaluate(`(() => ({
+    count: document.querySelectorAll('[aria-label="Active base layout"] option').length,
+    active: document.querySelector('[aria-label="Active base layout"]')?.selectedOptions?.[0]?.textContent?.trim(),
+    name: document.querySelector('[aria-label="Base layout name"]')?.value,
+    metadata: document.querySelector('[aria-label="Base layout metadata"]')?.value,
+    status: document.querySelector('.statusbar > span')?.textContent?.trim(),
+  }))()`);
+}
+
+let modelTransformTest;
+let gizmoScreenshotPath;
+if (process.env.WULFRAM_FORGE_GIZMO_TEST === '1') {
+  await evaluate(`(() => {
+    window.prompt = () => 'Transform Handle Test';
+    window.confirm = () => true;
+    [...document.querySelectorAll('.top-actions button')].find((button) => button.textContent?.includes('New'))?.click();
+    document.querySelector('.mode-switch button:nth-child(2)')?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const point = await evaluate(`(() => {
+    const rect = document.querySelector('.terrain-viewport').getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.58 };
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await evaluate(`(() => {
+    [...document.querySelectorAll('.transform-tool-controls button')].find((button) => button.textContent?.includes('Move XYZ'))?.click();
+    document.querySelector('.terrain-viewport canvas')?.focus();
+    return true;
+  })()`);
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17, modifiers: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const translate = await evaluate(`(() => ({
+    handles: document.querySelector('.terrain-viewport')?.dataset?.transformHandles,
+    entity: document.querySelector('.terrain-viewport')?.dataset?.transformEntity,
+    activeButton: document.querySelector('.transform-tool-controls button.active')?.textContent?.trim(),
+    selected: document.querySelector('.inspector-heading h2')?.textContent?.trim(),
+  }))()`);
+  await evaluate(`(() => {
+    [...document.querySelectorAll('.transform-tool-controls button')].find((button) => button.textContent?.includes('Pitch / Roll / Yaw'))?.click();
+    return true;
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const rotate = await evaluate(`(() => ({
+    handles: document.querySelector('.terrain-viewport')?.dataset?.transformHandles,
+    entity: document.querySelector('.terrain-viewport')?.dataset?.transformEntity,
+    activeButton: document.querySelector('.transform-tool-controls button.active')?.textContent?.trim(),
+    hint: document.querySelector('.transform-preview-badge')?.textContent?.trim(),
+  }))()`);
+  const rotationBefore = await evaluate(`(() => ({
+    yaw: document.querySelector('.inspector .range-field output')?.textContent?.trim(),
+    pitchRoll: [...document.querySelectorAll('.inspector .number-grid.two input')].map((input) => input.value),
+  }))()`);
+  const rotationDrag = await evaluate(`(() => {
+    const rect = document.querySelector('.terrain-viewport').getBoundingClientRect();
+    return {
+      from: { x: rect.left + rect.width * 0.572, y: rect.top + rect.height * 0.564 },
+      to: { x: rect.left + rect.width * 0.545, y: rect.top + rect.height * 0.515 },
+    };
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rotationDrag.from.x, y: rotationDrag.from.y, button: 'left', buttons: 1, clickCount: 1, modifiers: 2 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rotationDrag.to.x, y: rotationDrag.to.y, button: 'left', buttons: 1, modifiers: 2 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rotationDrag.to.x, y: rotationDrag.to.y, button: 'left', buttons: 0, clickCount: 1, modifiers: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const rotationAfter = await evaluate(`(() => ({
+    yaw: document.querySelector('.inspector .range-field output')?.textContent?.trim(),
+    pitchRoll: [...document.querySelectorAll('.inspector .number-grid.two input')].map((input) => input.value),
+    status: document.querySelector('.statusbar > span')?.textContent?.trim(),
+  }))()`);
+  modelTransformTest = { translate, rotate, drag: { before: rotationBefore, after: rotationAfter } };
+  if (screenshotPath) {
+    const extension = path.extname(screenshotPath);
+    gizmoScreenshotPath = `${screenshotPath.slice(0, extension ? -extension.length : undefined)}-gizmo${extension || '.png'}`;
+    const screenshot = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    await writeFile(gizmoScreenshotPath, Buffer.from(screenshot.data, 'base64'));
+  }
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 });
+}
+
 let escapePlacementTest;
 if (process.env.WULFRAM_FORGE_ESCAPE_TEST === '1') {
   await evaluate(`(() => { document.querySelector('.mode-switch button:nth-child(2)')?.click(); return true; })()`);
@@ -317,5 +428,5 @@ const relevantEvents = events
   .filter((event) => event.method === 'Log.entryAdded' || event.method === 'Runtime.exceptionThrown' || event.method === 'Network.loadingFailed')
   .map((event) => ({ method: event.method, params: event.params }));
 
-console.log(JSON.stringify({ target: { title: target.title, url: target.url }, repositoryTest, placementTest, repositoryWizardTest, unitDragTest, escapePlacementTest, heightmapDialogTest, terrainBrushTest, layout, textureProbe, frameTiming, cameraFrameTiming, metrics: metrics.metrics, events: relevantEvents, screenshotPath }, null, 2));
+console.log(JSON.stringify({ target: { title: target.title, url: target.url }, repositoryTest, placementTest, repositoryWizardTest, unitDragTest, baseLayoutTest, modelTransformTest, escapePlacementTest, heightmapDialogTest, terrainBrushTest, layout, textureProbe, frameTiming, cameraFrameTiming, metrics: metrics.metrics, events: relevantEvents, screenshotPath, gizmoScreenshotPath }, null, 2));
 socket.close();

@@ -41,7 +41,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
-import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
+import { TerrainViewport, type EditorMode, type ModelTransformMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
 import { heightsFromGrayscaleRgba } from '@/lib/heightmap';
 import {
@@ -61,10 +61,13 @@ import {
   switchLocalRepositoryBranch,
   type RepositoryCatalog,
   type RepositoryDiagnostics,
+  type RepositorySaveScope,
 } from '@/lib/map-repository-client';
 import {
+  MAP_REQUIRED_SOURCE_FILES,
   MAP_SOURCE_FILES,
   createMapSourceArchive,
+  parseBaseLayoutCollection,
   parseMapSourceFiles,
   readMapSourceArchive,
   type MapSourceFiles,
@@ -74,6 +77,7 @@ import {
   CATALOG,
   DEFAULT_VALIDATION,
   ENTITY_NAMES,
+  activateBaseLayout,
   catalogFor,
   catalogItemHasModel,
   cloneProject,
@@ -90,10 +94,13 @@ import {
   sampleSlopeDegrees,
   snapStructureToTerrain,
   structureTerrainClearance,
+  synchronizeActiveBaseLayout,
   toBaseLayout,
   usesFootprintTerrainSnap,
   validateProject,
   type AssetManifest,
+  type BaseLayoutMetadata,
+  type BaseLayoutState,
   type BaseTemplateLibrary,
   type StateEntity,
   type Vec3,
@@ -126,6 +133,11 @@ interface Notice {
   text: string;
 }
 
+interface DirtyScopes {
+  terrain: boolean;
+  base: boolean;
+}
+
 const STORAGE_KEY = 'wulfram-forge-project-v1';
 const MAX_HISTORY = 32;
 const TERRAIN_TOOL_LABELS: Record<TerrainTool, string> = {
@@ -146,6 +158,34 @@ function downloadBlob(blob: Blob, filename: string) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function parseLayoutMetadataSource(source: string): BaseLayoutMetadata {
+  const metadata: BaseLayoutMetadata = {};
+  for (const [index, rawLine] of source.split(/\r?\n/).entries()) {
+    if (!rawLine.trim()) continue;
+    const equals = rawLine.indexOf('=');
+    if (equals < 1) throw new Error(`Metadata line ${index + 1} must use key=value.`);
+    const key = rawLine.slice(0, equals).trim();
+    const value = rawLine.slice(equals + 1).trim();
+    if (!key) throw new Error(`Metadata line ${index + 1} has an empty key.`);
+    if (Object.hasOwn(metadata, key)) throw new Error(`Metadata key “${key}” is duplicated.`);
+    metadata[key] = value;
+  }
+  return metadata;
+}
+
+function projectWithLayoutMetadataDraft(project: WulframProject, source?: string): WulframProject {
+  const next = cloneProject(project);
+  if (source === undefined) return next;
+  const active = next.baseLayouts.find((layout) => layout.id === next.activeBaseLayoutId);
+  if (active) active.metadata = parseLayoutMetadataSource(source);
+  return synchronizeActiveBaseLayout(next);
+}
+
+function importedStateLayoutName(fileName: string): string {
+  const base = fileName.replace(/\\/g, '/').split('/').pop() ?? fileName;
+  return base.toLowerCase() === 'state' ? 'Default' : base.replaceAll('_', ' ');
 }
 
 function NumberField({
@@ -229,6 +269,7 @@ export function EditorApp() {
   const [templateScale, setTemplateScale] = useState(1);
   const [templateYaw, setTemplateYaw] = useState(0);
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
+  const [modelTransformMode, setModelTransformMode] = useState<ModelTransformMode>('translate');
   const [showGrid, setShowGrid] = useState(true);
   const [cursor, setCursor] = useState<Vec3>();
   const [heightmapRange, setHeightmapRange] = useState<[number, number]>([0, 180]);
@@ -239,7 +280,7 @@ export function EditorApp() {
   const [heightmapDialogOpen, setHeightmapDialogOpen] = useState(false);
   const [undoStack, setUndoStack] = useState<WulframProject[]>([]);
   const [redoStack, setRedoStack] = useState<WulframProject[]>([]);
-  const [dirty, setDirty] = useState(false);
+  const [dirtyScopes, setDirtyScopes] = useState<DirtyScopes>({ terrain: false, base: false });
   const [notice, setNotice] = useState<Notice>({ tone: 'working', text: 'Loading original Wulfram assets…' });
   const [repositoryCatalog, setRepositoryCatalog] = useState<RepositoryCatalog>();
   const [repositorySlug, setRepositorySlug] = useState('');
@@ -254,8 +295,17 @@ export function EditorApp() {
   const [nativeRepositoryBridge] = useState(hasNativeRepositoryBridge);
   const importRef = useRef<HTMLInputElement>(null);
   const heightmapRef = useRef<HTMLInputElement>(null);
+  const layoutMetadataRef = useRef<HTMLTextAreaElement>(null);
   const strokeSnapshotRef = useRef<WulframProject | null>(null);
   const levelHeightRef = useRef(0);
+  const dirty = dirtyScopes.terrain || dirtyScopes.base;
+
+  const markDirty = useCallback((scope: RepositorySaveScope | 'both') => {
+    setDirtyScopes((current) => ({
+      terrain: current.terrain || scope === 'terrain' || scope === 'all' || scope === 'both',
+      base: current.base || scope === 'base' || scope === 'all' || scope === 'both',
+    }));
+  }, []);
 
   const updateCursor = useCallback((point?: Vec3) => {
     setCursor(point);
@@ -308,7 +358,7 @@ export function EditorApp() {
           try {
             const restored = JSON.parse(stored) as WulframProject;
             if (restored.format === 'wulfram-map-project' && restored.version === 1) {
-              setProject(restored);
+              setProject(cloneProject(restored));
               setNotice({ tone: 'ready', text: 'Restored the latest local project' });
               return;
             }
@@ -327,18 +377,34 @@ export function EditorApp() {
         const terrain = parseLand(land);
         terrain.tagmap = parseLines(tagmap);
         terrain.tagmap2 = parseLines(tagmap2);
+        const entities = parseState(state);
+        const updatedAt = new Date().toISOString();
+        const validation = {
+          ...DEFAULT_VALIDATION,
+          serviceRadius: mapAnalysis.powerCell.serviceRadius,
+          backupRadius: mapAnalysis.powerCell.backupRadius,
+        };
         const demo: WulframProject = {
           format: 'wulfram-map-project',
           version: 1,
           name: assets.demo.name,
           terrain,
-          entities: parseState(state),
-          validation: {
-            ...DEFAULT_VALIDATION,
-            serviceRadius: mapAnalysis.powerCell.serviceRadius,
-            backupRadius: mapAnalysis.powerCell.backupRadius,
-          },
-          updatedAt: new Date().toISOString(),
+          entities,
+          validation,
+          baseLayouts: [{
+            id: 'default',
+            name: 'Default',
+            metadata: {},
+            entities: entities.map((entity) => ({
+              ...entity,
+              position: [...entity.position] as Vec3,
+              rotation: [...entity.rotation] as Vec3,
+            })),
+            validation: { ...validation },
+            updatedAt,
+          }],
+          activeBaseLayoutId: 'default',
+          updatedAt,
         };
         if (!cancelled) {
           setProject(demo);
@@ -447,17 +513,25 @@ export function EditorApp() {
     setRedoStack([]);
   }, []);
 
-  const mutate = useCallback((change: (draft: WulframProject) => void, record = true) => {
+  const mutate = useCallback((
+    change: (draft: WulframProject) => void,
+    record = true,
+    scope: RepositorySaveScope | 'both' = mode === 'base' ? 'base' : 'terrain',
+  ) => {
     setProject((current) => {
       if (!current) return current;
       if (record) pushHistory(cloneProject(current));
       const next = cloneProject(current);
       change(next);
-      next.updatedAt = new Date().toISOString();
+      const updatedAt = new Date().toISOString();
+      next.updatedAt = updatedAt;
+      if (scope === 'base' || scope === 'all' || scope === 'both') {
+        synchronizeActiveBaseLayout(next, updatedAt);
+      }
       return next;
     });
-    setDirty(true);
-  }, [pushHistory]);
+    markDirty(scope);
+  }, [markDirty, mode, pushHistory]);
 
   const undo = useCallback(() => {
     setUndoStack((stack) => {
@@ -467,10 +541,10 @@ export function EditorApp() {
         if (current) setRedoStack((redo) => [...redo.slice(-(MAX_HISTORY - 1)), cloneProject(current)]);
         return cloneProject(previous);
       });
-      setDirty(true);
+      markDirty('both');
       return stack.slice(0, -1);
     });
-  }, []);
+  }, [markDirty]);
 
   const redo = useCallback(() => {
     setRedoStack((stack) => {
@@ -480,10 +554,10 @@ export function EditorApp() {
         if (current) setUndoStack((undoHistory) => [...undoHistory.slice(-(MAX_HISTORY - 1)), cloneProject(current)]);
         return cloneProject(next);
       });
-      setDirty(true);
+      markDirty('both');
       return stack.slice(0, -1);
     });
-  }, []);
+  }, [markDirty]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -496,7 +570,7 @@ export function EditorApp() {
         event.preventDefault();
         if (project) {
           window.localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
-          setDirty(false);
+          setDirtyScopes({ terrain: false, base: false });
           setNotice({ tone: 'ready', text: 'Saved locally' });
         }
       } else if (event.key === 'Delete' && selectedEntityId) {
@@ -535,6 +609,81 @@ export function EditorApp() {
     () => baseTemplates?.templates.find((template) => template.id === selectedTemplateId),
     [baseTemplates, selectedTemplateId],
   );
+  const activeLayout = useMemo(
+    () => project?.baseLayouts.find((layout) => layout.id === project.activeBaseLayoutId),
+    [project],
+  );
+
+  const selectBaseLayout = useCallback((id: string) => {
+    if (!project || id === project.activeBaseLayoutId) return;
+    mutate((draft) => { activateBaseLayout(draft, id); }, true, 'base');
+    setSelectedEntityId(undefined);
+    const name = project.baseLayouts.find((layout) => layout.id === id)?.name ?? id;
+    setNotice({ tone: 'ready', text: `${name} is now the active base layout` });
+  }, [mutate, project]);
+
+  const addBaseLayout = useCallback((duplicate: boolean) => {
+    if (!project || !activeLayout) return;
+    const id = createId('layout');
+    const now = new Date().toISOString();
+    const layout: BaseLayoutState = {
+      id,
+      name: duplicate ? `${activeLayout.name} copy` : `Layout ${project.baseLayouts.length + 1}`,
+      metadata: duplicate ? { ...activeLayout.metadata } : {},
+      entities: duplicate
+        ? activeLayout.entities.map((entity) => ({
+            ...entity,
+            position: [...entity.position] as Vec3,
+            rotation: [...entity.rotation] as Vec3,
+          }))
+        : [],
+      validation: { ...activeLayout.validation },
+      updatedAt: now,
+    };
+    mutate((draft) => {
+      draft.baseLayouts.push(layout);
+      activateBaseLayout(draft, id);
+    }, true, 'base');
+    setSelectedEntityId(undefined);
+    setNotice({ tone: 'ready', text: `${layout.name} created${duplicate ? ' from the active layout' : ' as an empty layout'}` });
+  }, [activeLayout, mutate, project]);
+
+  const deleteActiveBaseLayout = useCallback(() => {
+    if (!project || !activeLayout) return;
+    if (project.baseLayouts.length === 1) {
+      setNotice({ tone: 'error', text: 'Every map must keep at least one base layout.' });
+      return;
+    }
+    if (!window.confirm(`Delete base layout “${activeLayout.name}”?`)) return;
+    mutate((draft) => {
+      synchronizeActiveBaseLayout(draft);
+      const index = draft.baseLayouts.findIndex((layout) => layout.id === draft.activeBaseLayoutId);
+      draft.baseLayouts.splice(index, 1);
+      const next = draft.baseLayouts[Math.min(index, draft.baseLayouts.length - 1)];
+      draft.activeBaseLayoutId = next.id;
+      draft.entities = next.entities.map((entity) => ({
+        ...entity,
+        position: [...entity.position] as Vec3,
+        rotation: [...entity.rotation] as Vec3,
+      }));
+      draft.validation = { ...next.validation };
+    }, true, 'base');
+    setSelectedEntityId(undefined);
+    setNotice({ tone: 'ready', text: `${activeLayout.name} deleted` });
+  }, [activeLayout, mutate, project]);
+
+  const applyLayoutMetadata = useCallback((source: string) => {
+    try {
+      const metadata = parseLayoutMetadataSource(source);
+      mutate((draft) => {
+        const layout = draft.baseLayouts.find((candidate) => candidate.id === draft.activeBaseLayoutId);
+        if (layout) layout.metadata = metadata;
+      }, true, 'base');
+      setNotice({ tone: 'ready', text: `${Object.keys(metadata).length} metadata entr${Object.keys(metadata).length === 1 ? 'y' : 'ies'} applied to the active layout` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Layout metadata is invalid.' });
+    }
+  }, [mutate]);
 
   const textureNames = useMemo(() => {
     if (!manifest) return [];
@@ -654,8 +803,8 @@ export function EditorApp() {
       }
       return { ...current, terrain, updatedAt: new Date().toISOString() };
     });
-    setDirty(true);
-  }, [brushFalloff, brushRadius, brushShape, brushStrength, manifest, selectedTexture, terrainTargetHeight, terrainTool]);
+    markDirty('terrain');
+  }, [brushFalloff, brushRadius, brushShape, brushStrength, manifest, markDirty, selectedTexture, terrainTargetHeight, terrainTool]);
 
   const onTerrainStroke = useCallback((x: number, y: number, phase: StrokePhase) => {
     if (!project) return;
@@ -668,9 +817,9 @@ export function EditorApp() {
     } else if (strokeSnapshotRef.current) {
       pushHistory(strokeSnapshotRef.current);
       strokeSnapshotRef.current = null;
-      setDirty(true);
+      markDirty('terrain');
     }
-  }, [applyBrush, project, pushHistory]);
+  }, [applyBrush, markDirty, project, pushHistory]);
 
   const conformEntityToTerrain = useCallback((entity: StateEntity, terrain: WulframProject['terrain']) => {
     const item = catalogFor(entity);
@@ -725,6 +874,17 @@ export function EditorApp() {
     setSelectedEntityId(id);
     setNotice({ tone: 'ready', text: `Unit moved and terrain-tuned at ${x.toFixed(1)}, ${y.toFixed(1)}` });
   }, [conformEntityToTerrain, mutate, project]);
+
+  const transformEntity = useCallback((id: string, position: Vec3, rotation: Vec3) => {
+    mutate((draft) => {
+      const entity = draft.entities.find((candidate) => candidate.id === id);
+      if (!entity) return;
+      entity.position = [...position] as Vec3;
+      entity.rotation = [...rotation] as Vec3;
+    }, true, 'base');
+    setSelectedEntityId(id);
+    setNotice({ tone: 'ready', text: `3D transform committed · XYZ ${position.map((value) => value.toFixed(1)).join(', ')} · rotation ${rotation.map((value) => value.toFixed(3)).join(', ')}` });
+  }, [mutate]);
 
   const placeUnit = useCallback((x: number, y: number) => {
     if (!project) return;
@@ -844,7 +1004,7 @@ export function EditorApp() {
         return;
       }
       let landText: string | undefined;
-      let stateText: string | undefined;
+      const stateTexts: Array<{ name: string; text: string }> = [];
       let tagmapText: string | undefined;
       let tagmap2Text: string | undefined;
       let jsonValue: unknown;
@@ -857,7 +1017,7 @@ export function EditorApp() {
         if (MAP_SOURCE_FILES.includes(base as (typeof MAP_SOURCE_FILES)[number])) {
           sourceFiles[base as (typeof MAP_SOURCE_FILES)[number]] = text;
         } else if (base === 'land' || base.endsWith('.land')) landText = text;
-        else if (base === 'state' || /^state\d*$/.test(base) || base.endsWith('.state')) stateText = text;
+        else if (base === 'state' || /^state\d*$/.test(base) || base === 'db_state' || base === 'bigstate' || base.endsWith('.state')) stateTexts.push({ name: base, text });
         else if (base === 'tagmap2' || base.endsWith('.tagmap2')) tagmap2Text = text;
         else if (base === 'tagmap' || base.endsWith('.tagmap')) tagmapText = text;
         else if (base.endsWith('.json')) jsonValue = JSON.parse(text);
@@ -884,16 +1044,23 @@ export function EditorApp() {
         }
       }
 
-      if (!sourceProject && MAP_SOURCE_FILES.every((fileName) => typeof sourceFiles[fileName] === 'string')) {
+      if (!sourceProject && MAP_REQUIRED_SOURCE_FILES.every((fileName) => typeof sourceFiles[fileName] === 'string')) {
         sourceProject = parseMapSourceFiles(sourceFiles);
       }
+
+      const importedCollection = !sourceProject && typeof sourceFiles['base-layouts.json'] === 'string'
+        ? parseBaseLayoutCollection(sourceFiles['base-layouts.json'])
+        : jsonValue && typeof jsonValue === 'object'
+          && (jsonValue as { format?: unknown }).format === 'wulfram-base-layout-collection'
+          ? parseBaseLayoutCollection(JSON.stringify(jsonValue))
+          : undefined;
 
       if (sourceProject) {
         pushHistory(cloneProject(project));
         setProject(sourceProject);
         setRepositorySlug('');
         setLastPullRequestUrl('');
-        setDirty(true);
+        markDirty('both');
         setSelectedEntityId(undefined);
         setNotice({ tone: 'ready', text: `Git map source ${sourceProject.name} imported` });
         return;
@@ -902,10 +1069,10 @@ export function EditorApp() {
       if (jsonValue && typeof jsonValue === 'object' && (jsonValue as WulframProject).format === 'wulfram-map-project') {
         const restored = jsonValue as WulframProject;
         pushHistory(cloneProject(project));
-        setProject(restored);
+        setProject(cloneProject(restored));
         setRepositorySlug('');
         setLastPullRequestUrl('');
-        setDirty(true);
+        markDirty('both');
         setSelectedEntityId(undefined);
         setNotice({ tone: 'ready', text: `Project ${restored.name} imported` });
         return;
@@ -921,15 +1088,52 @@ export function EditorApp() {
           if (tagmapText) draft.terrain.tagmap = parseLines(tagmapText);
           if (tagmap2Text) draft.terrain.tagmap2 = parseLines(tagmap2Text);
         }
-        if (stateText) draft.entities = parseState(stateText);
-        if (jsonValue) {
+        if (importedCollection) {
+          draft.baseLayouts = importedCollection.layouts;
+          draft.activeBaseLayoutId = importedCollection.activeLayoutId;
+          const active = importedCollection.layouts.find((layout) => layout.id === importedCollection.activeLayoutId)!;
+          draft.entities = active.entities.map((entity) => ({
+            ...entity,
+            position: [...entity.position] as Vec3,
+            rotation: [...entity.rotation] as Vec3,
+          }));
+          draft.validation = { ...active.validation };
+        } else if (stateTexts.length > 1) {
+          const updatedAt = new Date().toISOString();
+          draft.baseLayouts = stateTexts.map((stateFile, index) => ({
+            id: index === 0 ? 'default' : `original-${stateFile.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+            name: importedStateLayoutName(stateFile.name),
+            metadata: { sourceFile: stateFile.name },
+            entities: parseState(stateFile.text),
+            validation: { ...draft.validation },
+            updatedAt,
+          }));
+          draft.activeBaseLayoutId = draft.baseLayouts[0].id;
+          draft.entities = draft.baseLayouts[0].entities.map((entity) => ({
+            ...entity,
+            position: [...entity.position] as Vec3,
+            rotation: [...entity.rotation] as Vec3,
+          }));
+        } else if (stateTexts.length === 1) {
+          draft.entities = parseState(stateTexts[0].text);
+          const active = draft.baseLayouts.find((layout) => layout.id === draft.activeBaseLayoutId);
+          if (active) active.metadata = { ...active.metadata, sourceFile: stateTexts[0].name };
+        }
+        if (jsonValue && !importedCollection) {
           const layout = parseBaseLayout(jsonValue);
           draft.entities = layout.entities;
           if (layout.name) draft.name = layout.name;
           if (layout.validation) draft.validation = layout.validation;
+          if (layout.layout) {
+            const active = draft.baseLayouts.find((candidate) => candidate.id === draft.activeBaseLayoutId);
+            if (active) {
+              active.name = layout.layout.name;
+              active.metadata = { ...layout.layout.metadata };
+            }
+          }
         }
         if (importedName) draft.name = importedName;
-      });
+      }, true, 'both');
       setRepositorySlug('');
       setLastPullRequestUrl('');
       setSelectedEntityId(undefined);
@@ -942,8 +1146,10 @@ export function EditorApp() {
   const saveLocal = useCallback(() => {
     if (!project) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
-      setDirty(false);
+      const projectToSave = projectWithLayoutMetadataDraft(project, layoutMetadataRef.current?.value);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(projectToSave));
+      setProject(projectToSave);
+      setDirtyScopes({ terrain: false, base: false });
       setNotice({ tone: 'ready', text: 'Project saved in this browser' });
     } catch {
       setNotice({ tone: 'error', text: 'Local save failed; export a ZIP backup.' });
@@ -952,9 +1158,17 @@ export function EditorApp() {
 
   const exportJson = useCallback(() => {
     if (!project) return;
-    const layout = toBaseLayout(project);
-    downloadBlob(new Blob([`${JSON.stringify(layout, null, 2)}\n`], { type: 'application/json' }), `${safeMapName(project.name)}-base-layout.json`);
-    setNotice({ tone: 'ready', text: 'New-server JSON base layout exported' });
+    try {
+      const projectToExport = projectWithLayoutMetadataDraft(project, layoutMetadataRef.current?.value);
+      const layout = toBaseLayout(projectToExport);
+      downloadBlob(
+        new Blob([`${JSON.stringify(layout, null, 2)}\n`], { type: 'application/json' }),
+        `${safeMapName(project.name)}-${safeMapName(layout.layout.name)}.base-layout.json`,
+      );
+      setNotice({ tone: 'ready', text: `${layout.layout.name} exported as new-server JSON` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Base layout export failed.' });
+    }
   }, [project]);
 
   const exportSource = useCallback(async () => {
@@ -962,7 +1176,10 @@ export function EditorApp() {
     try {
       const slug = safeMapName(project.name);
       setNotice({ tone: 'working', text: 'Packing line-oriented Git map source…' });
-      const archive = await createMapSourceArchive(project, slug);
+      const archive = await createMapSourceArchive(
+        projectWithLayoutMetadataDraft(project, layoutMetadataRef.current?.value),
+        slug,
+      );
       downloadBlob(new Blob([archive], { type: 'application/zip' }), `${slug}-source.zip`);
       setNotice({ tone: 'ready', text: 'Git-friendly TSV, JSONL, and tag-map source exported' });
     } catch (error) {
@@ -974,10 +1191,12 @@ export function EditorApp() {
     if (!project) return;
     try {
       setNotice({ tone: 'working', text: 'Packing original map files and JSON layout…' });
-      const archive = await createMapArchive(project);
+      const archive = await createMapArchive(
+        projectWithLayoutMetadataDraft(project, layoutMetadataRef.current?.value),
+      );
       const blob = new Blob([archive], { type: 'application/zip' });
       downloadBlob(blob, `${safeMapName(project.name)}.zip`);
-      setDirty(false);
+      setDirtyScopes({ terrain: false, base: false });
       setNotice({ tone: 'ready', text: 'Map ZIP exported with original and new-server formats' });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export failed.' });
@@ -995,7 +1214,7 @@ export function EditorApp() {
       setProject(loaded.project);
       setRedoStack([]);
       setSelectedEntityId(undefined);
-      setDirty(false);
+      setDirtyScopes({ terrain: false, base: false });
       setNotice({ tone: 'ready', text: `${loaded.project.name} loaded from Git source` });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Repository map load failed.' });
@@ -1007,25 +1226,50 @@ export function EditorApp() {
   const saveRepositorySelection = useCallback(async (publish: boolean) => {
     if (!project) return;
     const slug = repositorySlug || safeMapName(project.name);
+    const scope: RepositorySaveScope = mode === 'base' ? 'base' : 'terrain';
+    const scopeLabel = scope === 'base' ? 'base layouts' : 'terrain';
     if (publish && !window.confirm(
       repositoryCatalog?.branch === repositoryCatalog?.defaultBranch
-        ? `Save ${project.name}, create a feature branch, commit it, push it, and open a pull request into main?`
-        : `Save ${project.name}, commit it on ${repositoryCatalog?.branch}, push it, and open or update its pull request into main?`,
+        ? `Save only the ${scopeLabel} for ${project.name}, create a feature branch, commit it, push it, and open a pull request into main?`
+        : `Save only the ${scopeLabel} for ${project.name}, commit it on ${repositoryCatalog?.branch}, push it, and open or update its pull request into main?`,
     )) return;
     try {
       setRepositoryBusy(true);
-      setNotice({ tone: 'working', text: publish ? `Saving and publishing ${slug}…` : `Saving ${slug} as Git map source…` });
-      const saved = await saveLocalRepositoryMap(slug, project);
-      setProject(saved.project);
+      setNotice({
+        tone: 'working',
+        text: publish
+          ? `Saving ${scopeLabel} only and publishing ${slug}…`
+          : `Saving ${scopeLabel} only · ${scope === 'base' ? 'terrain will not be written' : 'base layouts will not be replaced'}…`,
+      });
+      const projectToSave = projectWithLayoutMetadataDraft(
+        project,
+        scope === 'base' ? layoutMetadataRef.current?.value : undefined,
+      );
+      if (scope === 'base') {
+        const updatedAt = new Date().toISOString();
+        projectToSave.updatedAt = updatedAt;
+        synchronizeActiveBaseLayout(projectToSave, updatedAt);
+      }
+      const saved = await saveLocalRepositoryMap(slug, projectToSave, scope);
+      setProject(projectToSave);
       setRepositorySlug(slug);
-      setDirty(false);
+      const wroteBase = saved.writtenFiles?.includes('base-layouts.json') ?? scope === 'base';
+      setDirtyScopes((current) => ({
+        terrain: scope === 'terrain' ? false : current.terrain,
+        base: wroteBase ? false : current.base,
+      }));
       if (publish) {
         const result = await publishLocalRepositoryMap(slug);
         setLastPullRequestUrl(result.prUrl);
         setRepositoryCatalog(result);
         setNotice({ tone: 'ready', text: result.message });
       } else {
-        setNotice({ tone: 'ready', text: `${saved.project.name} saved to maps/${slug}` });
+        setNotice({
+          tone: 'ready',
+          text: scope === 'base'
+            ? `${project.baseLayouts.length} base layout${project.baseLayouts.length === 1 ? '' : 's'} saved to maps/${slug} · terrain untouched`
+            : `${project.name} terrain saved to maps/${slug} · base layouts preserved`,
+        });
       }
       await refreshRepository(false);
     } catch (error) {
@@ -1033,7 +1277,7 @@ export function EditorApp() {
     } finally {
       setRepositoryBusy(false);
     }
-  }, [project, refreshRepository, repositoryCatalog?.branch, repositoryCatalog?.defaultBranch, repositorySlug]);
+  }, [mode, project, refreshRepository, repositoryCatalog?.branch, repositoryCatalog?.defaultBranch, repositorySlug]);
 
   const newMap = useCallback(() => {
     if (dirty && !window.confirm('Start a new map? Your current project is autosaved locally, but unexported changes will leave the canvas.')) return;
@@ -1055,9 +1299,9 @@ export function EditorApp() {
     setRedoStack([]);
     setSelectedEntityId(undefined);
     setMode('terrain');
-    setDirty(true);
+    markDirty('both');
     setNotice({ tone: 'ready', text: 'Blank 129 × 129 map created' });
-  }, [dirty, manifest, project, pushHistory]);
+  }, [dirty, manifest, markDirty, project, pushHistory]);
 
   if (!manifest || !baseTemplates || !project) {
     return (
@@ -1237,16 +1481,16 @@ export function EditorApp() {
           <span>MAP</span>
           <input
             aria-label="Map name"
-            onChange={(event) => mutate((draft) => { draft.name = event.target.value; }, false)}
+            onChange={(event) => mutate((draft) => { draft.name = event.target.value; }, false, 'terrain')}
             value={project.name}
           />
-          {dirty && <i aria-label="Unsaved changes" title="Unsaved changes" />}
+          {dirty && <i aria-label="Unsaved changes" title={`${dirtyScopes.terrain ? 'Terrain' : ''}${dirtyScopes.terrain && dirtyScopes.base ? ' + ' : ''}${dirtyScopes.base ? 'base layouts' : ''} changed`} />}
           <Badge className="source-badge" variant="outline">ORIGINAL ASSETS</Badge>
         </div>
         <div className="top-actions">
           <Button onClick={newMap} size="sm" title="New map" variant="ghost"><Plus /> New</Button>
           <Button onClick={() => importRef.current?.click()} size="sm" title="Import map or heightmap" variant="ghost"><FolderOpen /> Import</Button>
-          <Button onClick={saveLocal} size="sm" title="Save locally" variant="ghost"><Save /> Save</Button>
+          <Button onClick={saveLocal} size="sm" title="Save the complete editor project in this browser" variant="ghost"><Save /> Save local</Button>
           <Button onClick={() => void exportSource()} size="sm" title="Export Git source" variant="ghost"><FileArchive /> Source</Button>
           <Button onClick={exportJson} size="sm" title="Export server JSON" variant="ghost"><FileJson /> JSON</Button>
           <Button className="export-button" onClick={() => void exportMap()} size="sm" title="Export Wulfram package"><Download /> Export map</Button>
@@ -1309,6 +1553,59 @@ export function EditorApp() {
             </>
           ) : (
             <>
+              <section className="panel-section layout-library">
+                <div className="section-heading"><p className="section-label">BASE LAYOUT STATES</p><span>{project.baseLayouts.length}</span></div>
+                <select
+                  aria-label="Active base layout"
+                  className="template-select"
+                  onChange={(event) => selectBaseLayout(event.target.value)}
+                  value={project.activeBaseLayoutId}
+                >
+                  {project.baseLayouts.map((layout) => (
+                    <option key={layout.id} value={layout.id}>{layout.name} · {layout.entities.filter((entity) => entity.token !== '*').length} units</option>
+                  ))}
+                </select>
+                {activeLayout && (
+                  <div className="layout-controls">
+                    <label className="layout-name-field">
+                      <span>LAYOUT NAME</span>
+                      <input
+                        aria-label="Base layout name"
+                        onChange={(event) => mutate((draft) => {
+                          const layout = draft.baseLayouts.find((candidate) => candidate.id === draft.activeBaseLayoutId);
+                          if (layout) layout.name = event.target.value;
+                        }, false, 'base')}
+                        value={activeLayout.name}
+                      />
+                    </label>
+                    <div className="layout-actions">
+                      <button onClick={() => addBaseLayout(false)} type="button"><Plus /> New empty</button>
+                      <button onClick={() => addBaseLayout(true)} type="button">Duplicate</button>
+                      <button aria-label="Delete active base layout" disabled={project.baseLayouts.length === 1} onClick={deleteActiveBaseLayout} title="Delete active layout" type="button"><Trash2 /></button>
+                    </div>
+                    <label className="layout-metadata-field">
+                      <span>METADATA · ONE KEY=VALUE PER LINE</span>
+                      <textarea
+                        aria-label="Base layout metadata"
+                        defaultValue={Object.entries(activeLayout.metadata).map(([key, value]) => `${key}=${value}`).join('\n')}
+                        key={activeLayout.id}
+                        onChange={() => markDirty('base')}
+                        onBlur={(event) => applyLayoutMetadata(event.target.value)}
+                        placeholder={'mode=competitive\nweather=clear'}
+                        ref={layoutMetadataRef}
+                        rows={3}
+                      />
+                    </label>
+                    <button
+                      className="layout-apply-metadata"
+                      onClick={() => applyLayoutMetadata(layoutMetadataRef.current?.value ?? '')}
+                      onMouseDown={(event) => event.preventDefault()}
+                      type="button"
+                    >Apply metadata</button>
+                    <p className="field-help">Each layout is a separate state for this terrain. Base-mode Save writes only layout files; terrain pixels and map metadata stay untouched.</p>
+                  </div>
+                )}
+              </section>
               <section className="panel-section">
                 <div className="section-heading"><p className="section-label">BUILD TEAM</p><span>STATE {team}</span></div>
                 <div className="team-switch">
@@ -1402,8 +1699,8 @@ export function EditorApp() {
               <button aria-label="Repository setup and diagnostics" disabled={repositoryBusy} onClick={openRepositoryWizard} title="Repository setup, branches, and diagnostics" type="button"><Settings2 /></button>
               <button aria-label="Refresh repository maps" disabled={repositoryBusy} onClick={() => void refreshRepository(true)} title="Refresh repository maps" type="button"><RefreshCw /></button>
               <button disabled={!repositoryCatalog || !repositorySlug || repositoryBusy} onClick={() => void loadRepositorySelection()} title="Load selected Git source" type="button"><FolderOpen /><span>Load</span></button>
-              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(false)} title="Save canonical source to the local maps checkout" type="button"><Save /><span>Save</span></button>
-              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(true)} title="Save, commit to a feature branch, push, and open a PR into main" type="button"><Upload /><span>Publish PR</span></button>
+              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(false)} title={mode === 'base' ? 'Save base layouts only; do not write terrain or map metadata' : 'Save terrain only; preserve base layouts'} type="button"><Save /><span>{mode === 'base' ? 'Save layouts' : 'Save terrain'}</span></button>
+              <button disabled={!repositoryCatalog || repositoryBusy} onClick={() => void saveRepositorySelection(true)} title={`Save ${mode === 'base' ? 'base layouts' : 'terrain'}, commit to a feature branch, push, and open a PR into main`} type="button"><Upload /><span>Publish PR</span></button>
             </div>
             <div className="stage-stats">
               <span>{project.terrain.width} × {project.terrain.height}</span>
@@ -1425,6 +1722,7 @@ export function EditorApp() {
             resolveEntityMove={resolveEntityMove}
             onSelectEntity={setSelectedEntityId}
             onTerrainStroke={onTerrainStroke}
+            onTransformEntity={transformEntity}
             placementPreview={placementPreview}
             placementPreviewAnchor={cursor ? [cursor[0], cursor[1]] : undefined}
             selectedEntityId={selectedEntityId}
@@ -1434,6 +1732,7 @@ export function EditorApp() {
             terrain={project.terrain}
             textureBlend={textureBlend}
             terrainTool={terrainTool}
+            transformMode={modelTransformMode}
           />
           <footer className={`statusbar ${notice.tone}`}>
             <span>{notice.tone === 'error' ? <AlertTriangle /> : notice.tone === 'working' ? <CircleDot /> : <CheckCircle2 />}{notice.text}</span>
@@ -1539,6 +1838,14 @@ export function EditorApp() {
                   ))}
                 </div>
                 <button className="secondary-action" onClick={() => updateSelected((entity) => conformEntityToTerrain(entity, project.terrain))} type="button"><Mountain /> Snap and conform to footprint</button>
+              </section>
+              <section className="inspector-block transform-tool-controls">
+                <p className="section-label">CTRL 3D TRANSFORM</p>
+                <div className="brush-option-buttons">
+                  <button className={modelTransformMode === 'translate' ? 'active' : ''} onClick={() => setModelTransformMode('translate')} type="button">Move XYZ</button>
+                  <button className={modelTransformMode === 'rotate' ? 'active' : ''} onClick={() => setModelTransformMode('rotate')} type="button">Pitch / Roll / Yaw</button>
+                </div>
+                <p className="field-help">Hold Ctrl in the viewport to reveal standard 3D handles. Move is free on all three axes; Rotate edits pitch, roll, and yaw. One drag creates one undo step.</p>
               </section>
               <section className="inspector-block">
                 <RangeField

@@ -42,16 +42,16 @@ npm run dev
 ## Self-contained Windows release build
 
 ```powershell
-npm run build:desktop -- --version 0.4.0
+npm run build:desktop -- --version 0.5.0
 ```
 
-The archive is written to `dist/desktop/WulframForge-0.4.0-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
+The archive is written to `dist/desktop/WulframForge-0.5.0-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
 
 To include an official fixed WebView2 runtime for an offline package:
 
 ```powershell
 $env:WEBVIEW2_FIXED_RUNTIME_DIR = 'C:\path\to\fixed-webview2-runtime'
-npm run build:desktop -- --version 0.4.0
+npm run build:desktop -- --version 0.5.0
 ```
 
 ## Research/debug desktop build
@@ -79,10 +79,12 @@ $env:WULFRAM_FORGE_DRAG_TEST = '1'
 $env:WULFRAM_FORGE_ESCAPE_TEST = '1'
 $env:WULFRAM_FORGE_HEIGHTMAP_TEST = '1'
 $env:WULFRAM_FORGE_BRUSH_TEST = '1'
+$env:WULFRAM_FORGE_LAYOUT_TEST = '1'
+$env:WULFRAM_FORGE_GIZMO_TEST = '1'
 npm run measure:desktop
 ```
 
-The probe records layout, DPI, textures, frame timing, repository UI, placement previews, Shift-drag behavior, exact square height stamping, console failures, network failures, and `outputs/webview-measurement.png`.
+The probe records layout, DPI, textures, frame timing, repository UI, placement previews, Shift-drag behavior, multiple layout states, Ctrl translation/rotation handles, exact square height stamping, console failures, network failures, and `outputs/webview-measurement.png`.
 
 ## Map branches, pull requests, and releases
 

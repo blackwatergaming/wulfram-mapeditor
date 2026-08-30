@@ -11,6 +11,7 @@ import {
   parseState,
   serializeLand,
   serializeState,
+  synchronizeActiveBaseLayout,
   toBaseLayout,
   validateProject,
 } from '../lib/wulfram.ts';
@@ -85,7 +86,9 @@ for (const asset of [...Object.values(manifest.models), ...Object.values(manifes
   assert.ok(fs.existsSync(path.join(workspace, 'public', asset.url)), `Missing extracted asset ${asset.url}`);
 }
 JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-base-layout-v1.schema.json'), 'utf8'));
+JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-base-layout-collection-v1.schema.json'), 'utf8'));
 JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-map-source-v1.schema.json'), 'utf8'));
+synchronizeActiveBaseLayout(validationFixture);
 assert.deepEqual(cloneProject(validationFixture), validationFixture);
 
 console.log(`Verified ${terrain.heights.length.toLocaleString()} terrain vertices, ${entities.length} state entities, ${baseTemplates.templates.length} base templates, JSON round-trips, power rules, and extracted assets.`);

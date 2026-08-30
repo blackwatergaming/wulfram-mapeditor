@@ -20,6 +20,7 @@ import {
 } from '../lib/map-source.ts';
 import {
   DEFAULT_VALIDATION,
+  cloneProject,
   parseBaseLayout,
   parseLand,
   parseLines,
@@ -87,15 +88,36 @@ function loadFixtureProject(fixture) {
   terrain.tagmap = fixture.hasTagmap ? parseLines(readFixtureFile(fixture, 'tagmap')) : [];
   terrain.tagmap2 = fixture.hasTagmap2 ? parseLines(readFixtureFile(fixture, 'tagmap2')) : [];
   const selectedState = fixture.stateFiles[0];
-  return {
+  const updatedAt = '2000-01-01T00:00:00.000Z';
+  const baseLayouts = fixture.stateFiles.map((stateFile, index) => ({
+    id: index === 0 ? 'default' : `original-${stateFile.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    name: stateFile.toLowerCase() === 'state' ? 'Default' : stateFile.replaceAll('_', ' '),
+    metadata: { sourceFile: stateFile },
+    entities: parseState(readFixtureFile(fixture, stateFile)),
+    validation: { ...DEFAULT_VALIDATION },
+    updatedAt,
+  }));
+  if (!baseLayouts.length) {
+    baseLayouts.push({
+      id: 'default',
+      name: 'Default',
+      metadata: {},
+      entities: [],
+      validation: { ...DEFAULT_VALIDATION },
+      updatedAt,
+    });
+  }
+  return cloneProject({
     format: 'wulfram-map-project',
     version: 1,
     name: fixture.name,
     terrain,
     entities: selectedState ? parseState(readFixtureFile(fixture, selectedState)) : [],
     validation: { ...DEFAULT_VALIDATION },
-    updatedAt: '2000-01-01T00:00:00.000Z',
-  };
+    baseLayouts,
+    activeBaseLayoutId: baseLayouts[0].id,
+    updatedAt,
+  });
 }
 
 function assertNumberClose(actual, expected, tolerance, context) {
@@ -210,6 +232,23 @@ void test('ZIP packager reloads every original map without semantic changes', as
     const layoutEntities = project.entities.filter((entity) => entity.token !== '*');
     assertStateEqual(reloadedLayout.entities, layoutEntities, `${fixture.name} packaged base layout`);
     assert.equal(reloadedLayout.name, project.name, `${fixture.name}: JSON layout map name`);
+    assert.equal(reloadedLayout.layout.name, project.baseLayouts[0].name, `${fixture.name}: active JSON layout name`);
+    assert.deepEqual(
+      reloadedLayout.layout.metadata,
+      fixture.stateFiles.length ? { sourceFile: fixture.stateFiles[0] } : {},
+      `${fixture.name}: active JSON layout metadata`,
+    );
+    const layoutCollection = JSON.parse(byName.get('base-layouts.json').text);
+    assert.equal(layoutCollection.activeLayoutId, project.activeBaseLayoutId, `${fixture.name}: packaged active layout`);
+    assert.equal(layoutCollection.layouts.length, Math.max(1, fixture.stateFiles.length), `${fixture.name}: packaged layout count`);
+    for (const [index, stateFile] of fixture.stateFiles.entries()) {
+      assert.equal(layoutCollection.layouts[index].metadata.sourceFile, stateFile, `${fixture.name}: packaged ${stateFile} identity`);
+      assertStateEqual(
+        layoutCollection.layouts[index].entities,
+        parseState(readFixtureFile(fixture, stateFile)),
+        `${fixture.name}: packaged ${stateFile} layout`,
+      );
+    }
     assert.deepEqual(
       JSON.parse(byName.get('wulfram-project.json').text),
       JSON.parse(JSON.stringify(project)),
@@ -242,6 +281,14 @@ void test('Git source round-trips and recompiles every original map', async () =
     assert.deepEqual(reloaded.validation, project.validation, `${fixture.name}: Git source validation`);
     assert.equal(reloaded.name, project.name, `${fixture.name}: Git source name`);
     assert.equal(reloaded.updatedAt, project.updatedAt, `${fixture.name}: Git source timestamp`);
+    assert.equal(reloaded.baseLayouts.length, project.baseLayouts.length, `${fixture.name}: Git source layout count`);
+    for (const [index, expectedLayout] of project.baseLayouts.entries()) {
+      const actualLayout = reloaded.baseLayouts[index];
+      assert.equal(actualLayout.id, expectedLayout.id, `${fixture.name}: layout ${index} id`);
+      assert.equal(actualLayout.name, expectedLayout.name, `${fixture.name}: layout ${index} name`);
+      assert.deepEqual(actualLayout.metadata, expectedLayout.metadata, `${fixture.name}: layout ${index} metadata`);
+      assertStateEqual(actualLayout.entities, expectedLayout.entities, `${fixture.name}: layout ${index} entities`);
+    }
     assert.deepEqual(createMapSourceFiles(reloaded), sourceFiles, `${fixture.name}: Git source writer is idempotent`);
 
     const expectedPackage = createMapArchiveFiles(project);

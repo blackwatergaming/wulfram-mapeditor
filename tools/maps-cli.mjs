@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  MAP_SOURCE_FILES,
+  MAP_REQUIRED_SOURCE_FILES,
   parseMapSourceFiles,
   readMapSourceArchive,
 } from '../lib/map-source.ts';
@@ -60,14 +60,17 @@ async function importSource(repository, input, requestedSlug) {
   let project;
   let suggestedSlug;
   if (fs.statSync(resolved).isDirectory()) {
-    project = parseMapSourceFiles(
-      Object.fromEntries(
-        MAP_SOURCE_FILES.map((fileName) => [
-          fileName,
-          fs.readFileSync(path.join(resolved, fileName), 'utf8'),
-        ]),
-      ),
+    const files = Object.fromEntries(
+      MAP_REQUIRED_SOURCE_FILES.map((fileName) => [
+        fileName,
+        fs.readFileSync(path.join(resolved, fileName), 'utf8'),
+      ]),
     );
+    const layoutsPath = path.join(resolved, 'base-layouts.json');
+    if (fs.existsSync(layoutsPath)) {
+      files['base-layouts.json'] = fs.readFileSync(layoutsPath, 'utf8');
+    }
+    project = parseMapSourceFiles(files);
     suggestedSlug = path.basename(resolved);
   } else if (/\.zip$/i.test(resolved)) {
     const archive = await readMapSourceArchive(fs.readFileSync(resolved));
@@ -125,7 +128,7 @@ function seedOriginalMaps(repository, originalRoot) {
     const byLowerName = new Map(
       fileNames.map((name) => [name.toLowerCase(), name]),
     );
-    const stateFile = fileNames
+    const stateFiles = fileNames
       .filter((name) => /^(?:state\d*|db_state|bigstate)$/i.test(name))
       .sort((left, right) =>
         left.toLowerCase() === 'state'
@@ -133,7 +136,7 @@ function seedOriginalMaps(repository, originalRoot) {
           : right.toLowerCase() === 'state'
             ? 1
             : left.localeCompare(right),
-      )[0];
+      );
     const relativeName = path
       .relative(root, directory)
       .replaceAll(path.sep, '/');
@@ -156,16 +159,37 @@ function seedOriginalMaps(repository, originalRoot) {
           ),
         )
       : [];
+    const updatedAt = '2000-01-01T00:00:00.000Z';
+    const baseLayouts = stateFiles.map((stateFile, index) => ({
+      id: index === 0 ? 'default' : `original-${stateFile.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      name: stateFile.toLowerCase() === 'state'
+        ? 'Default'
+        : stateFile.replaceAll('_', ' '),
+      metadata: { sourceFile: stateFile },
+      entities: parseState(fs.readFileSync(path.join(directory, stateFile), 'utf8')),
+      validation: { ...DEFAULT_VALIDATION },
+      updatedAt,
+    }));
+    if (!baseLayouts.length) {
+      baseLayouts.push({
+        id: 'default',
+        name: 'Default',
+        metadata: {},
+        entities: [],
+        validation: { ...DEFAULT_VALIDATION },
+        updatedAt,
+      });
+    }
     const project = {
       format: 'wulfram-map-project',
       version: 1,
       name: relativeName,
       terrain,
-      entities: stateFile
-        ? parseState(fs.readFileSync(path.join(directory, stateFile), 'utf8'))
-        : [],
+      entities: baseLayouts[0].entities,
       validation: { ...DEFAULT_VALIDATION },
-      updatedAt: '2000-01-01T00:00:00.000Z',
+      baseLayouts,
+      activeBaseLayoutId: baseLayouts[0].id,
+      updatedAt,
     };
     const slug = safeMapName(relativeName.replaceAll('/', '-'));
     saveRepositoryMap(repository, slug, project);
@@ -202,11 +226,12 @@ async function main() {
       return;
     }
     console.table(
-      maps.map(({ slug, name, width, height, entities, updatedAt }) => ({
+      maps.map(({ slug, name, width, height, entities, layouts, updatedAt }) => ({
         slug,
         name,
         terrain: `${width}x${height}`,
         entities,
+        layouts,
         updated: updatedAt,
       })),
     );

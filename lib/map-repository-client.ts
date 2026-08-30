@@ -10,6 +10,7 @@ export interface RepositoryMapSummary {
   width: number;
   height: number;
   entities: number;
+  layouts: number;
 }
 
 export interface RepositoryCatalog {
@@ -40,11 +41,15 @@ export interface RepositoryDiagnostics extends Partial<Omit<RepositoryCatalog, '
 interface RepositoryMapResponse {
   slug: string;
   project: WulframProject;
+  scope?: RepositorySaveScope;
+  writtenFiles?: string[];
   repository?: string;
   branch?: string;
   remote?: string;
   changes?: number;
 }
+
+export type RepositorySaveScope = 'all' | 'terrain' | 'base';
 
 export interface RepositoryPublishResult extends RepositoryCatalog {
   committed: boolean;
@@ -135,15 +140,20 @@ export async function loadLocalRepositoryMap(slug: string): Promise<RepositoryMa
   return repositoryRequest<RepositoryMapResponse>(`/maps/${encodeURIComponent(slug)}`);
 }
 
-export async function saveLocalRepositoryMap(slug: string, project: WulframProject): Promise<RepositoryMapResponse> {
+export async function saveLocalRepositoryMap(
+  slug: string,
+  project: WulframProject,
+  scope: RepositorySaveScope = 'all',
+): Promise<RepositoryMapResponse> {
   if (hasNativeRepositoryBridge()) {
     const files = createMapSourceFiles(project);
-    const result = await nativeRequest<Omit<RepositoryMapResponse, 'project'>>('save', { slug, files });
-    return { ...result, project: parseMapSourceFiles(files) };
+    const result = await nativeRequest<Omit<RepositoryMapResponse, 'project'>>('save', { slug, files, scope });
+    const loaded = await nativeRequest<{ slug: string; files: MapSourceFiles }>('load', { slug });
+    return { ...result, project: parseMapSourceFiles(loaded.files) };
   }
   return repositoryRequest<RepositoryMapResponse>(`/maps/${encodeURIComponent(slug)}`, {
     method: 'PUT',
-    body: JSON.stringify({ project }),
+    body: JSON.stringify({ project, scope }),
   }, 20_000);
 }
 

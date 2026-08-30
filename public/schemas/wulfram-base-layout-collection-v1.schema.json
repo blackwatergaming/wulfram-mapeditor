@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/blackwatergaming/wulfram-mapeditor/main/public/schemas/wulfram-base-layout-collection-v1.schema.json",
+  "title": "Wulfram Base Layout Collection",
+  "description": "Named, metadata-bearing base layout states for one terrain map.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "activeLayoutId", "layouts"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "format": { "const": "wulfram-base-layout-collection" },
+    "version": { "const": 1 },
+    "activeLayoutId": { "type": "string", "minLength": 1 },
+    "layouts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "metadata", "entities", "validation", "updatedAt"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "entities": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/entity" }
+          },
+          "validation": { "$ref": "#/$defs/validation" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "token", "team", "position", "rotation", "active"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "token": { "type": "string", "minLength": 1 },
+        "subtype": { "type": "string" },
+        "team": { "type": "integer" },
+        "position": { "$ref": "#/$defs/vec3" },
+        "rotation": { "$ref": "#/$defs/vec3" },
+        "active": { "type": "integer" },
+        "raw": { "type": "string" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceRadius", "backupRadius", "maxSlopeDegrees", "minSpacing"],
+      "properties": {
+        "serviceRadius": { "type": "number", "minimum": 0 },
+        "backupRadius": { "type": "number", "minimum": 0 },
+        "maxSlopeDegrees": { "type": "number", "minimum": 0, "maximum": 90 },
+        "minSpacing": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

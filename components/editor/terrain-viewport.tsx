@@ -3,8 +3,15 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
 import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls';
+import {
+  entityPositionToScene,
+  entityRotationToScene,
+  scenePositionToEntity,
+  sceneRotationToEntity,
+} from '@/lib/model-transform';
 import type { TerrainBrushShape } from '@/lib/terrain-brush';
 import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
@@ -13,6 +20,7 @@ import { MODEL_WORLD_SCALE, catalogFor, modelNameFor, resolveTextureName, sample
 export type EditorMode = 'terrain' | 'base';
 export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint' | 'stamp';
 export type StrokePhase = 'start' | 'move' | 'end';
+export type ModelTransformMode = 'translate' | 'rotate';
 
 interface TerrainViewportProps {
   terrain: TerrainData;
@@ -30,10 +38,12 @@ interface TerrainViewportProps {
   serviceRadius: number;
   backupRadius: number;
   showGrid: boolean;
+  transformMode: ModelTransformMode;
   onTerrainStroke: (x: number, y: number, phase: StrokePhase) => void;
   onPlace: (x: number, y: number) => void;
   onSelectEntity: (id?: string) => void;
   onMoveEntity: (id: string, x: number, y: number) => void;
+  onTransformEntity: (id: string, position: [number, number, number], rotation: [number, number, number]) => void;
   resolveEntityMove: (entity: StateEntity, x: number, y: number) => StateEntity;
   onCursor: (point?: [number, number, number]) => void;
 }
@@ -355,25 +365,17 @@ function positionPlacementGhosts(
   for (const entity of preview) {
     const parts = holders.get(entity.id);
     if (!parts) continue;
-    parts.holder.position.set(
-      (entity.position[0] - terrain.worldWidth / 2) * scale,
-      entity.position[2] * scale,
-      (entity.position[1] - terrain.worldHeight / 2) * scale,
-    );
-    parts.modelHolder.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+    parts.holder.position.fromArray(entityPositionToScene(entity.position, terrain, scale));
+    parts.modelHolder.rotation.set(...entityRotationToScene(entity.rotation), 'YXZ');
     parts.footprint.position.y = (sampleHeight(terrain, entity.position[0], entity.position[1]) - entity.position[2]) * scale + 0.04;
   }
   root.visible = mode === 'base' && preview.length > 0;
 }
 
 function positionEntityHolder(holder: THREE.Group, entity: StateEntity, terrain: TerrainData, scale: number) {
-  holder.position.set(
-    (entity.position[0] - terrain.worldWidth / 2) * scale,
-    entity.position[2] * scale,
-    (entity.position[1] - terrain.worldHeight / 2) * scale,
-  );
+  holder.position.fromArray(entityPositionToScene(entity.position, terrain, scale));
   const modelHolder = holder.children.find((child) => child.userData.entityModelHolder === true);
-  modelHolder?.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+  modelHolder?.rotation.set(...entityRotationToScene(entity.rotation), 'YXZ');
   const ground = sampleHeight(terrain, entity.position[0], entity.position[1]);
   for (const child of holder.children) {
     if (typeof child.userData.groundOverlayLift !== 'number') continue;
@@ -438,10 +440,12 @@ export function TerrainViewport({
   serviceRadius,
   backupRadius,
   showGrid,
+  transformMode,
   onTerrainStroke,
   onPlace,
   onSelectEntity,
   onMoveEntity,
+  onTransformEntity,
   resolveEntityMove,
   onCursor,
 }: TerrainViewportProps) {
@@ -450,6 +454,9 @@ export function TerrainViewport({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const transformControlsRef = useRef<TransformControls | null>(null);
+  const transformHeldRef = useRef(false);
+  const refreshTransformRef = useRef<() => void>(() => undefined);
   const terrainRootRef = useRef(new THREE.Group());
   const entityRootRef = useRef(new THREE.Group());
   const placementRootRef = useRef(new THREE.Group());
@@ -463,7 +470,7 @@ export function TerrainViewport({
   const brushRef = useRef<THREE.Mesh | null>(null);
   const invalidateRef = useRef<(updateShadows?: boolean) => void>(() => undefined);
   const scaleRef = useRef(160 / Math.max(terrain.worldWidth, terrain.worldHeight));
-  const propsRef = useRef({ mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, resolveEntityMove, onCursor });
+  const propsRef = useRef({ mode, terrainTool, transformMode, selectedEntityId, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, onTransformEntity, resolveEntityMove, onCursor });
   const entitiesRef = useRef(entities);
   const terrainRef = useRef(terrain);
   const strokeRef = useRef(false);
@@ -487,8 +494,9 @@ export function TerrainViewport({
   }, [placementPreview, placementPreviewAnchor]);
 
   useEffect(() => {
-    propsRef.current = { mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, resolveEntityMove, onCursor };
-  }, [mode, onCursor, onMoveEntity, onPlace, onSelectEntity, onTerrainStroke, resolveEntityMove, selectedPlacementKey, terrainTool]);
+    propsRef.current = { mode, terrainTool, transformMode, selectedEntityId, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onMoveEntity, onTransformEntity, resolveEntityMove, onCursor };
+    refreshTransformRef.current();
+  }, [mode, onCursor, onMoveEntity, onPlace, onSelectEntity, onTerrainStroke, onTransformEntity, resolveEntityMove, selectedEntityId, selectedPlacementKey, terrainTool, transformMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -519,6 +527,13 @@ export function TerrainViewport({
     controls.maxDistance = 260;
     controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
     controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.size = 0.82;
+    const transformHelper = transformControls.getHelper();
+    transformHelper.visible = false;
+    scene.add(transformHelper);
+    transformControlsRef.current = transformControls;
 
     scene.add(new THREE.HemisphereLight(0xd9e7ee, 0x382619, 1.7));
     const sun = new THREE.DirectionalLight(0xffd2a1, 2.2);
@@ -610,6 +625,95 @@ export function TerrainViewport({
     };
     invalidateRef.current = requestRender;
 
+    let transformStart = '';
+    const selectedTransformParts = () => {
+      const id = propsRef.current.selectedEntityId;
+      const holder = id
+        ? entityRootRef.current.children.find((child) => child.userData.entityId === id) as THREE.Group | undefined
+        : undefined;
+      const modelHolder = holder?.children.find((child) => child.userData.entityModelHolder === true) as THREE.Group | undefined;
+      return { id, holder, modelHolder };
+    };
+    const transformSignature = (object: THREE.Object3D | undefined) => object
+      ? [...object.position.toArray(), ...object.rotation.toArray().slice(0, 3)].join(',')
+      : '';
+    const refreshTransform = () => {
+      if (transformControls.dragging) return;
+      const { id, holder, modelHolder } = selectedTransformParts();
+      if (!transformHeldRef.current || propsRef.current.mode !== 'base' || !holder || !modelHolder) {
+        transformControls.detach();
+        transformHelper.visible = false;
+        container.dataset.transformHandles = 'hidden';
+        delete container.dataset.transformEntity;
+        requestRender();
+        return;
+      }
+      const editingRotation = propsRef.current.transformMode === 'rotate';
+      transformControls.setMode(editingRotation ? 'rotate' : 'translate');
+      transformControls.space = editingRotation ? 'local' : 'world';
+      transformControls.attach(editingRotation ? modelHolder : holder);
+      const boundedControls = transformControls as TransformControls & {
+        minX: number;
+        maxX: number;
+        minZ: number;
+        maxZ: number;
+      };
+      const worldHalfWidth = terrainRef.current.worldWidth * scaleRef.current / 2;
+      const worldHalfHeight = terrainRef.current.worldHeight * scaleRef.current / 2;
+      boundedControls.minX = -worldHalfWidth;
+      boundedControls.maxX = worldHalfWidth;
+      boundedControls.minZ = -worldHalfHeight;
+      boundedControls.maxZ = worldHalfHeight;
+      transformHelper.visible = true;
+      container.dataset.transformHandles = editingRotation ? 'rotate' : 'translate';
+      container.dataset.transformEntity = id ?? '';
+      requestRender();
+    };
+    refreshTransformRef.current = refreshTransform;
+    refreshTransform();
+
+    const publishTransformCursor = () => {
+      const { holder } = selectedTransformParts();
+      if (!holder) return;
+      propsRef.current.onCursor(scenePositionToEntity(
+        holder.position.toArray(),
+        terrainRef.current,
+        scaleRef.current,
+      ));
+    };
+    const transformChanged = () => {
+      publishTransformCursor();
+      requestRender();
+    };
+    const transformStarted = () => {
+      transformStart = transformSignature(transformControls.object ?? undefined);
+      requestRender();
+    };
+    const transformFinished = () => {
+      const { id, holder, modelHolder } = selectedTransformParts();
+      if (id && holder && modelHolder && transformStart !== transformSignature(transformControls.object ?? undefined)) {
+        propsRef.current.onTransformEntity(
+          id,
+          scenePositionToEntity(holder.position.toArray(), terrainRef.current, scaleRef.current),
+          sceneRotationToEntity([modelHolder.rotation.x, modelHolder.rotation.y, modelHolder.rotation.z]),
+        );
+      }
+      transformStart = '';
+      if (!transformHeldRef.current) refreshTransform();
+      requestRender(true);
+    };
+    const transformDraggingChanged = (event: { value: unknown }) => {
+      const dragging = Boolean(event.value);
+      controls.enabled = !dragging;
+      interacting = dragging;
+      if (!dragging && !transformHeldRef.current) refreshTransform();
+      requestRender();
+    };
+    transformControls.addEventListener('change', transformChanged);
+    transformControls.addEventListener('mouseDown', transformStarted);
+    transformControls.addEventListener('mouseUp', transformFinished);
+    transformControls.addEventListener('dragging-changed', transformDraggingChanged);
+
     const controlsChanged = () => requestRender();
     const controlsStarted = () => { interacting = true; requestRender(); };
     const controlsEnded = () => { interacting = false; requestRender(); };
@@ -620,6 +724,10 @@ export function TerrainViewport({
     const keyboardEnabled = () => document.activeElement === renderer.domElement || renderer.domElement.matches(':hover');
     const editingText = (target: EventTarget | null) => target instanceof HTMLElement && target.matches('input, textarea, select, [contenteditable="true"]');
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Control' && !editingText(event.target) && keyboardEnabled()) {
+        transformHeldRef.current = true;
+        refreshTransform();
+      }
       if (editingText(event.target) || event.ctrlKey || event.metaKey || event.altKey || !keyboardEnabled()) return;
       if (event.code === 'Home') {
         event.preventDefault();
@@ -635,11 +743,19 @@ export function TerrainViewport({
       requestRender();
     };
     const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Control') {
+        transformHeldRef.current = false;
+        if (!transformControls.dragging) refreshTransform();
+      }
       if (!pressedCodes.delete(event.code)) return;
       event.preventDefault();
       requestRender();
     };
-    const clearPressedCodes = () => pressedCodes.clear();
+    const clearPressedCodes = () => {
+      pressedCodes.clear();
+      transformHeldRef.current = false;
+      if (!transformControls.dragging) refreshTransform();
+    };
     const focusViewport = () => renderer.domElement.focus({ preventScroll: true });
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -669,6 +785,13 @@ export function TerrainViewport({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearPressedCodes);
       renderer.domElement.removeEventListener('pointerdown', focusViewport);
+      transformControls.removeEventListener('change', transformChanged);
+      transformControls.removeEventListener('mouseDown', transformStarted);
+      transformControls.removeEventListener('mouseUp', transformFinished);
+      transformControls.removeEventListener('dragging-changed', transformDraggingChanged);
+      transformControls.detach();
+      transformControls.dispose();
+      scene.remove(transformHelper);
       controls.dispose();
       disposeTree(placementRoot);
       placementHolders.clear();
@@ -681,6 +804,10 @@ export function TerrainViewport({
       cameraRef.current = null;
       rendererRef.current = null;
       controlsRef.current = null;
+      transformControlsRef.current = null;
+      refreshTransformRef.current = () => undefined;
+      delete container.dataset.transformHandles;
+      delete container.dataset.transformEntity;
     };
   }, []);
 
@@ -783,22 +910,19 @@ export function TerrainViewport({
 
   useEffect(() => {
     const root = entityRootRef.current;
+    transformControlsRef.current?.detach();
     disposeTree(root);
     let cancelled = false;
     const scale = scaleRef.current;
     for (const entity of entitiesRef.current.filter((item) => item.token !== '*')) {
       const holder = new THREE.Group();
       holder.userData.entityId = entity.id;
-      holder.position.set(
-        (entity.position[0] - terrain.worldWidth / 2) * scale,
-        entity.position[2] * scale,
-        (entity.position[1] - terrain.worldHeight / 2) * scale,
-      );
+      holder.position.fromArray(entityPositionToScene(entity.position, terrainRef.current, scale));
       root.add(holder);
       const modelHolder = new THREE.Group();
       modelHolder.userData.entityId = entity.id;
       modelHolder.userData.entityModelHolder = true;
-      modelHolder.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+      modelHolder.rotation.set(...entityRotationToScene(entity.rotation), 'YXZ');
       holder.add(modelHolder);
       const placeholder = fallbackUnit(entity, scale);
       placeholder.userData.entityId = entity.id;
@@ -854,6 +978,7 @@ export function TerrainViewport({
         holder.add(backupRange);
       }
     }
+    refreshTransformRef.current();
     invalidateRef.current(true);
     return () => { cancelled = true; };
   }, [backupRadius, entitySceneKey, manifest, mode, selectedEntityId, serviceRadius, terrain.worldHeight, terrain.worldWidth]);
@@ -977,12 +1102,7 @@ export function TerrainViewport({
       return undefined;
     };
     const toWorld = (point: THREE.Vector3): [number, number, number] => {
-      const scale = scaleRef.current;
-      return [
-        point.x / scale + terrain.worldWidth / 2,
-        point.z / scale + terrain.worldHeight / 2,
-        point.y / scale,
-      ];
+      return scenePositionToEntity(point.toArray(), terrainRef.current, scaleRef.current);
     };
     const holderForEntity = (id: string) => entityRootRef.current.children.find((child) => child.userData.entityId === id) as THREE.Group | undefined;
     let unitDrag: { id: string; original: StateEntity; last?: [number, number] } | undefined;
@@ -1062,11 +1182,13 @@ export function TerrainViewport({
     };
     const onPointerMove = (event: PointerEvent) => {
       if ((event.buttons & 2) !== 0) return;
+      if (transformHeldRef.current || transformControlsRef.current?.dragging) return;
       latestPointer = { clientX: event.clientX, clientY: event.clientY };
       if (!pointerFrame) pointerFrame = requestAnimationFrame(processPointerMove);
     };
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      if (event.ctrlKey && transformControlsRef.current?.object) return;
       event.stopImmediatePropagation();
       renderer.domElement.focus({ preventScroll: true });
       const intersections = hit(event.clientX, event.clientY, propsRef.current.mode === 'base');
@@ -1162,9 +1284,12 @@ export function TerrainViewport({
         {mode === 'base' && placementPreview.length > 0 && (
           <span className="placement-preview-badge">PLACEMENT PREVIEW · {placementPreview.length} {placementPreview.length === 1 ? 'UNIT' : 'UNITS'}</span>
         )}
+        {mode === 'base' && selectedEntityId && (
+          <span className="transform-preview-badge">HOLD CTRL · {transformMode === 'translate' ? 'XYZ MOVE' : 'PITCH / ROLL / YAW'}</span>
+        )}
       </div>
       <div className="viewport-help">
-        <span>Mouse · Left edit/place · Shift-drag unit · Right orbit · Wheel zoom</span>
+        <span>Mouse · Left edit/place · Shift-drag unit · Ctrl transform handles · Right orbit · Wheel zoom</span>
         <span>Keys · WASD pan · Arrows turn/tilt · Q/E or +/− zoom · Home reset · Esc cancel placement</span>
       </div>
     </div>

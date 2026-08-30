@@ -10,7 +10,15 @@ internal sealed class MapRepositoryHost
 {
     private const string DefaultBranch = "main";
     private const string RepositoryName = "blackwatergaming/wulfram-maps";
-    private static readonly string[] SourceFiles =
+    private static readonly string[] TerrainSourceFiles =
+    [
+        "map.json",
+        "terrain.tsv",
+        "tagmap.txt",
+        "tagmap2.txt",
+    ];
+    private static readonly string[] BaseSourceFiles = ["entities.jsonl", "base-layouts.json"];
+    private static readonly string[] RequiredSourceFiles =
     [
         "map.json",
         "terrain.tsv",
@@ -18,6 +26,7 @@ internal sealed class MapRepositoryHost
         "tagmap.txt",
         "tagmap2.txt",
     ];
+    private static readonly string[] SourceFiles = [.. RequiredSourceFiles, "base-layouts.json"];
 
     private static readonly Regex SlugPattern = new(
         "^[a-z0-9](?:[a-z0-9_-]{0,79})$",
@@ -56,7 +65,12 @@ internal sealed class MapRepositoryHost
             {
                 "list" => ListMaps(),
                 "load" => LoadMap(RequiredString(root, "slug")),
-                "save" => SaveMap(RequiredString(root, "slug"), root.GetProperty("files")),
+                "save" => SaveMap(
+                    RequiredString(root, "slug"),
+                    root.GetProperty("files"),
+                    root.TryGetProperty("scope", out JsonElement scope) && scope.ValueKind == JsonValueKind.String
+                        ? scope.GetString()!
+                        : "all"),
                 "publish" => PublishMap(RequiredString(root, "slug")),
                 "configure" => ConfigureRepository(),
                 "diagnostics" => Diagnostics(),
@@ -82,7 +96,7 @@ internal sealed class MapRepositoryHost
             {
                 string slug = Path.GetFileName(directory);
                 if (!SlugPattern.IsMatch(slug)) continue;
-                foreach (string fileName in SourceFiles)
+                foreach (string fileName in RequiredSourceFiles)
                 {
                     if (!File.Exists(Path.Combine(directory, fileName)))
                         throw new InvalidDataException($"maps/{slug} is missing {fileName}.");
@@ -91,13 +105,23 @@ internal sealed class MapRepositoryHost
                 JsonElement document = metadata.RootElement;
                 JsonElement terrain = document.GetProperty("terrain");
                 int entities = File.ReadLines(Path.Combine(directory, "entities.jsonl")).Count(line => !string.IsNullOrWhiteSpace(line));
+                int layouts = 1;
+                string layoutsPath = Path.Combine(directory, "base-layouts.json");
+                if (File.Exists(layoutsPath))
+                {
+                    using JsonDocument layoutDocument = JsonDocument.Parse(File.ReadAllText(layoutsPath));
+                    if (layoutDocument.RootElement.TryGetProperty("layouts", out JsonElement layoutItems)
+                        && layoutItems.ValueKind == JsonValueKind.Array)
+                        layouts = Math.Max(1, layoutItems.GetArrayLength());
+                }
                 maps.Add(new MapSummary(
                     slug,
                     RequiredString(document, "name"),
                     RequiredString(document, "updatedAt"),
                     terrain.GetProperty("width").GetInt32(),
                     terrain.GetProperty("height").GetInt32(),
-                    entities));
+                    entities,
+                    layouts));
             }
         }
         GitInfo git = ReadGitInfo(root);
@@ -118,18 +142,37 @@ internal sealed class MapRepositoryHost
         string directory = MapDirectory(slug);
         Dictionary<string, string> files = [];
         foreach (string fileName in SourceFiles)
-            files[fileName] = File.ReadAllText(Path.Combine(directory, fileName));
+        {
+            string path = Path.Combine(directory, fileName);
+            if (File.Exists(path)) files[fileName] = File.ReadAllText(path);
+        }
         return new { slug, files };
     }
 
-    private object SaveMap(string slug, JsonElement filesElement)
+    private object SaveMap(string slug, JsonElement filesElement, string scope)
     {
         string root = RequireRepository();
         string directory = MapDirectory(slug, mustExist: false);
         if (filesElement.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("Native map save requires a source file object.");
+        if (scope is not ("all" or "terrain" or "base"))
+            throw new InvalidDataException($"Unknown map save scope: {scope}");
+        if (scope == "base" && (!Directory.Exists(directory)
+            || TerrainSourceFiles.Any(fileName => !File.Exists(Path.Combine(directory, fileName)))))
+            throw new InvalidOperationException($"Map {slug} has no saved terrain. Switch to Terrain mode and save it before saving base layouts.");
         Directory.CreateDirectory(directory);
-        foreach (string fileName in SourceFiles)
+        List<string> selectedFiles = scope switch
+        {
+            "terrain" => [.. TerrainSourceFiles],
+            "base" => [.. BaseSourceFiles],
+            _ => [.. SourceFiles],
+        };
+        if (scope == "terrain")
+        {
+            foreach (string fileName in BaseSourceFiles)
+                if (!File.Exists(Path.Combine(directory, fileName))) selectedFiles.Add(fileName);
+        }
+        foreach (string fileName in selectedFiles)
         {
             if (!filesElement.TryGetProperty(fileName, out JsonElement value) || value.ValueKind != JsonValueKind.String)
                 throw new InvalidDataException($"Native map save is missing {fileName}.");
@@ -139,6 +182,8 @@ internal sealed class MapRepositoryHost
         return new
         {
             slug,
+            scope,
+            writtenFiles = selectedFiles,
             repository = root,
             branch = git.Branch,
             remote = git.Remote,
@@ -516,5 +561,5 @@ internal sealed class MapRepositoryHost
     }
 
     private sealed record GitInfo(string Branch, string Remote, int Changes, string[] Branches);
-    private sealed record MapSummary(string Slug, string Name, string UpdatedAt, int Width, int Height, int Entities);
+    private sealed record MapSummary(string Slug, string Name, string UpdatedAt, int Width, int Height, int Entities, int Layouts);
 }
