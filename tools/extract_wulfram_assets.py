@@ -97,6 +97,11 @@ CARGO_NAMES = {
     "b": "Spy Bug",
 }
 
+BASE_CORE_TOKENS = {"e", "f", "r", "S", "s", "g", "E", "L", "p", "o", "d"}
+BASE_CLUSTER_DISTANCE = 375.0
+BASE_AUXILIARY_DISTANCE = 250.0
+BASE_MINIMUM_CORE_UNITS = 4
+
 
 class ShapeReader:
     def __init__(self, payload: bytes):
@@ -540,6 +545,148 @@ def analyze_maps() -> dict:
     }
 
 
+def extract_base_templates() -> dict:
+    templates = []
+    source_states = 0
+    source_units = 0
+
+    for state_path in sorted(MAPS_ROOT.glob("*/state"), key=lambda path: str(path).casefold()):
+        if not state_path.is_file() or not state_path.stat().st_size:
+            continue
+        land_path = state_path.parent / "land"
+        if not land_path.exists():
+            continue
+        try:
+            land = parse_land(land_path)
+            records = [record for record in parse_state(state_path) if "position" in record]
+        except (OSError, ValueError):
+            continue
+        source_states += 1
+        source_units += len(records)
+
+        for team in sorted({record["team"] for record in records if record["team"] > 0}):
+            core_indices = [
+                index
+                for index, record in enumerate(records)
+                if record["team"] == team and record["token"] in BASE_CORE_TOKENS
+            ]
+            parents = {index: index for index in core_indices}
+
+            def find(index: int) -> int:
+                while parents[index] != index:
+                    parents[index] = parents[parents[index]]
+                    index = parents[index]
+                return index
+
+            def union(left: int, right: int) -> None:
+                left_root, right_root = find(left), find(right)
+                if left_root != right_root:
+                    parents[right_root] = left_root
+
+            for offset, left_index in enumerate(core_indices):
+                left = records[left_index]["position"]
+                for right_index in core_indices[:offset]:
+                    right = records[right_index]["position"]
+                    if math.hypot(left[0] - right[0], left[1] - right[1]) <= BASE_CLUSTER_DISTANCE:
+                        union(left_index, right_index)
+
+            component_map: dict[int, list[int]] = defaultdict(list)
+            for index in core_indices:
+                component_map[find(index)].append(index)
+            components = [
+                {"core": indices, "members": list(indices)}
+                for indices in component_map.values()
+                if len(indices) >= BASE_MINIMUM_CORE_UNITS
+                and any(records[index]["token"] == "e" for index in indices)
+            ]
+            if not components:
+                continue
+
+            # Cargo, uplinks, supply ships, and mines are attached to only their
+            # nearest powered component so one source entity never appears twice.
+            core_index_set = set(core_indices)
+            for index, record in enumerate(records):
+                if index in core_index_set or record["team"] != team or record["token"] == "*":
+                    continue
+                nearest_component = None
+                nearest_distance = math.inf
+                x, y = record["position"][:2]
+                for component_index, component in enumerate(components):
+                    distance = min(
+                        math.hypot(x - records[core_index]["position"][0], y - records[core_index]["position"][1])
+                        for core_index in component["core"]
+                    )
+                    if distance < nearest_distance:
+                        nearest_component = component_index
+                        nearest_distance = distance
+                if nearest_component is not None and nearest_distance <= BASE_AUXILIARY_DISTANCE:
+                    components[nearest_component]["members"].append(index)
+
+            components.sort(
+                key=lambda component: (
+                    statistics.mean(records[index]["position"][1] for index in component["core"]),
+                    statistics.mean(records[index]["position"][0] for index in component["core"]),
+                )
+            )
+            map_name = state_path.parent.name
+            map_slug = re.sub(r"[^a-z0-9]+", "-", map_name.lower()).strip("-") or "map"
+            for base_number, component in enumerate(components, start=1):
+                member_indices = sorted(set(component["members"]))
+                positions = [records[index]["position"] for index in member_indices]
+                minimum_x = min(position[0] for position in positions)
+                maximum_x = max(position[0] for position in positions)
+                minimum_y = min(position[1] for position in positions)
+                maximum_y = max(position[1] for position in positions)
+                center_x = (minimum_x + maximum_x) / 2
+                center_y = (minimum_y + maximum_y) / 2
+                units = []
+                for index in member_indices:
+                    record = records[index]
+                    x, y, z = record["position"]
+                    unit = {
+                        "token": record["token"],
+                        "offset": [round(x - center_x, 6), round(y - center_y, 6)],
+                        "groundOffset": round(z - sample_terrain_height(land, x, y), 6),
+                        "rotation": [round(value, 12) for value in record["rotation"]],
+                        "active": record["active"],
+                    }
+                    if record.get("subtype") is not None:
+                        unit["subtype"] = record["subtype"]
+                    units.append(unit)
+                templates.append(
+                    {
+                        "id": f"{map_slug}-team-{team}-base-{base_number}",
+                        "name": f"{map_name.replace('_', ' ').title()} · Team {team} · Base {base_number}",
+                        "sourceMap": map_name,
+                        "sourceState": state_path.name,
+                        "sourceTeam": team,
+                        "sourceWorldSize": [land.world_width, land.world_height],
+                        "sourceAnchor": [round(center_x, 6), round(center_y, 6)],
+                        "unitCount": len(units),
+                        "footprint": {
+                            "width": round(maximum_x - minimum_x, 3),
+                            "height": round(maximum_y - minimum_y, 3),
+                        },
+                        "units": units,
+                    }
+                )
+
+    return {
+        "format": "wulfram-base-template-library",
+        "version": 1,
+        "source": {
+            "mapsRoot": "../wulfram-debug/data/maps",
+            "stateFiles": source_states,
+            "records": source_units,
+            "method": "Powered connected components with nearby logistics attached to the nearest base",
+            "clusterDistance": BASE_CLUSTER_DISTANCE,
+            "auxiliaryDistance": BASE_AUXILIARY_DISTANCE,
+            "minimumCoreUnits": BASE_MINIMUM_CORE_UNITS,
+        },
+        "templates": templates,
+    }
+
+
 def copy_demo_map() -> dict:
     source = MAPS_ROOT / "crossroads"
     destination = PUBLIC / "demo" / "crossroads"
@@ -562,6 +709,7 @@ def main() -> None:
     texture_manifest = extract_terrain_textures(palette)
     model_manifest, material_manifest = extract_models(palette)
     analysis = analyze_maps()
+    base_templates = extract_base_templates()
     demo = copy_demo_map()
 
     logo_source = SOURCE / "emjoii" / "wulfram2-logo-transparent.png"
@@ -580,14 +728,20 @@ def main() -> None:
         "terrainTextures": texture_manifest,
         "materials": material_manifest,
         "models": model_manifest,
+        "baseTemplates": {
+            "url": "/assets/base-templates.json",
+            "count": len(base_templates["templates"]),
+        },
         "demo": demo,
     }
     write_json(PUBLIC / "manifest.json", manifest, compact=True)
     write_json(PUBLIC / "map-analysis.json", analysis)
+    write_json(PUBLIC / "base-templates.json", base_templates, compact=True)
     print(
         f"Extracted {len(texture_manifest)} terrain textures, {len(material_manifest)} model materials, "
         f"and {len(model_manifest)} models."
     )
+    print(f"Extracted {len(base_templates['templates'])} powered base templates.")
     print(json.dumps(analysis["turretDefaults"], indent=2))
     print(json.dumps(analysis["powerCell"], indent=2))
 

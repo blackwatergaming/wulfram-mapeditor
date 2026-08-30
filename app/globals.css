@@ -134,6 +134,15 @@
 .team-switch button { height: 31px; border: 1px solid #363c42; border-radius: 3px; color: #767e85; font-size: 9px; font-weight: 800; }
 .team-switch .team-one.active { border-color: #a94e38; color: #ff9b81; background: #3a1d18; }
 .team-switch .team-two.active { border-color: #3e6fa8; color: #86baff; background: #17273a; }
+.template-library { background: linear-gradient(180deg, #1b1e20, #17191b); }
+.template-select { width: 100%; height: 34px; margin-top: 9px; padding: 0 29px 0 9px; border: 1px solid #3b4146; border-radius: 4px; color: #d3d0cb; background: #111315; font-size: 9px; }
+.template-select:focus { border-color: #9c653f; outline: 1px solid #9c653f55; }
+.template-select option { color: #d7d5d1; background: #171a1d; }
+.template-controls { margin-top: 9px; padding: 10px; border: 1px solid #3a332c; border-radius: 4px; background: #141311; }
+.template-controls .range-field { margin-bottom: 13px; }
+.template-summary { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; color: #737a80; font: 8px var(--font-geist-mono), monospace; }
+.template-summary strong { color: #efa06a; font-size: 11px; }
+.template-rotation-presets { grid-template-columns: repeat(4, 1fr); margin: -3px 0 9px; }
 .catalog-list { padding-bottom: 16px; border-top: 1px solid #292e32; }
 .catalog-group { padding: 13px 11px 0; }
 .catalog-group > .section-label { margin: 0 4px 6px; }
@@ -234,6 +243,12 @@
 .validation-summary strong { color: #b9bdc0; font: 18px var(--font-geist-mono), monospace; }
 .validation-summary strong.has-errors { color: #eb6a60; }
 .validation-summary span { margin-top: 2px; color: #6f767c; font-size: 8px; }
+.template-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 13px; }
+.template-detail div { display: flex; flex-direction: column; gap: 3px; }
+.template-detail div:nth-child(3) { grid-column: 1 / -1; }
+.template-detail span { color: #697177; font-size: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.template-detail strong { color: #d8d5d0; font: 9px var(--font-geist-mono), monospace; }
+.template-detail p { grid-column: 1 / -1; margin-top: 2px; color: #777e83; font-size: 9px; line-height: 1.5; }
 .validation-list { display: grid; gap: 7px; }
 .slope-readout { color: #838a8f; font: 9px var(--font-geist-mono), monospace; }
 .validation-item { display: grid; grid-template-columns: 15px 1fr; align-items: start; gap: 6px; padding: 7px; border: 1px solid; border-radius: 3px; font-size: 9px; line-height: 1.4; }

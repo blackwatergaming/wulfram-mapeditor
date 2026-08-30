@@ -58,7 +58,51 @@ export interface AssetManifest {
   terrainTextures: Record<string, TextureAsset>;
   materials: Record<string, TextureAsset>;
   models: Record<string, ModelAsset>;
+  baseTemplates: { url: string; count: number };
   demo: { name: string; baseUrl: string; files: string[] };
+}
+
+export interface BaseTemplateUnit {
+  token: string;
+  subtype?: string;
+  offset: [number, number];
+  groundOffset: number;
+  rotation: Vec3;
+  active: number;
+}
+
+export interface BaseTemplate {
+  id: string;
+  name: string;
+  sourceMap: string;
+  sourceState: string;
+  sourceTeam: number;
+  sourceWorldSize: [number, number];
+  sourceAnchor: [number, number];
+  unitCount: number;
+  footprint: { width: number; height: number };
+  units: BaseTemplateUnit[];
+}
+
+export interface BaseTemplateLibrary {
+  format: 'wulfram-base-template-library';
+  version: 1;
+  source: {
+    mapsRoot: string;
+    stateFiles: number;
+    records: number;
+    method: string;
+    clusterDistance: number;
+    auxiliaryDistance: number;
+    minimumCoreUnits: number;
+  };
+  templates: BaseTemplate[];
+}
+
+export interface BaseTemplatePlacement {
+  entities: StateEntity[];
+  scale: number;
+  anchor: [number, number];
 }
 
 export interface ShapeModel {
@@ -311,6 +355,63 @@ export function sampleSlopeDegrees(terrain: TerrainData, worldX: number, worldY:
   const sx = (sampleHeight(terrain, worldX + dx, worldY) - sampleHeight(terrain, worldX - dx, worldY)) / (2 * dx);
   const sy = (sampleHeight(terrain, worldX, worldY + dy) - sampleHeight(terrain, worldX, worldY - dy)) / (2 * dy);
   return Math.atan(Math.hypot(sx, sy)) * 180 / Math.PI;
+}
+
+export function instantiateBaseTemplate(
+  template: BaseTemplate,
+  terrain: TerrainData,
+  requestedAnchor: [number, number],
+  team: number,
+  requestedScale = 1,
+  yawRadians = 0,
+): BaseTemplatePlacement {
+  if (!template.units.length) return { entities: [], scale: requestedScale, anchor: requestedAnchor };
+  const safeScale = Number.isFinite(requestedScale) ? Math.max(0.1, requestedScale) : 1;
+  const safeYaw = Number.isFinite(yawRadians) ? yawRadians : 0;
+  const cosine = Math.cos(safeYaw);
+  const sine = Math.sin(safeYaw);
+  const rotatedOffsets = template.units.map((unit) => [
+    unit.offset[0] * cosine - unit.offset[1] * sine,
+    unit.offset[0] * sine + unit.offset[1] * cosine,
+  ] as [number, number]);
+  const minimumX = Math.min(...rotatedOffsets.map((offset) => offset[0]));
+  const maximumX = Math.max(...rotatedOffsets.map((offset) => offset[0]));
+  const minimumY = Math.min(...rotatedOffsets.map((offset) => offset[1]));
+  const maximumY = Math.max(...rotatedOffsets.map((offset) => offset[1]));
+  const margin = 10;
+  const availableWidth = Math.max(1, terrain.worldWidth - margin * 2);
+  const availableHeight = Math.max(1, terrain.worldHeight - margin * 2);
+  const scaledWidth = (maximumX - minimumX) * safeScale;
+  const scaledHeight = (maximumY - minimumY) * safeScale;
+  const fit = Math.min(
+    1,
+    scaledWidth > 0 ? availableWidth / scaledWidth : 1,
+    scaledHeight > 0 ? availableHeight / scaledHeight : 1,
+  );
+  const scale = safeScale * fit;
+  const lowerAnchorX = margin - minimumX * scale;
+  const upperAnchorX = terrain.worldWidth - margin - maximumX * scale;
+  const lowerAnchorY = margin - minimumY * scale;
+  const upperAnchorY = terrain.worldHeight - margin - maximumY * scale;
+  const anchor: [number, number] = [
+    Math.max(lowerAnchorX, Math.min(upperAnchorX, requestedAnchor[0])),
+    Math.max(lowerAnchorY, Math.min(upperAnchorY, requestedAnchor[1])),
+  ];
+  const normalizedYaw = (value: number) => (value % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+  const entities = template.units.map((unit, index): StateEntity => {
+    const x = anchor[0] + rotatedOffsets[index][0] * scale;
+    const y = anchor[1] + rotatedOffsets[index][1] * scale;
+    return {
+      id: createId(`${template.id}-${index + 1}`),
+      token: unit.token,
+      subtype: unit.subtype,
+      team: Math.trunc(team),
+      position: [x, y, sampleHeight(terrain, x, y) + (Number.isFinite(unit.groundOffset) ? unit.groundOffset : 0)],
+      rotation: [unit.rotation[0], unit.rotation[1], normalizedYaw(unit.rotation[2] + safeYaw)],
+      active: Math.trunc(unit.active),
+    };
+  });
+  return { entities, scale, anchor };
 }
 
 export function catalogFor(entity: StateEntity): CatalogItem | undefined {

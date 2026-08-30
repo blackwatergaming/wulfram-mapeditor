@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import JSZip from 'jszip';
 import {
   AlertTriangle,
   Box,
@@ -28,6 +27,8 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
+import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
+import { shouldPaintTextureVertex } from '@/lib/terrain-blend';
 import {
   CATALOG,
   DEFAULT_VALIDATION,
@@ -37,18 +38,17 @@ import {
   createBlankProject,
   createId,
   ensureTextureTag,
+  instantiateBaseTemplate,
   parseBaseLayout,
   parseLand,
   parseLines,
   parseState,
   sampleHeight,
   sampleSlopeDegrees,
-  serializeLand,
-  serializeLines,
-  serializeState,
   toBaseLayout,
   validateProject,
   type AssetManifest,
+  type BaseTemplateLibrary,
   type StateEntity,
   type Vec3,
   type WulframProject,
@@ -75,10 +75,6 @@ interface Notice {
 
 const STORAGE_KEY = 'wulfram-forge-project-v1';
 const MAX_HISTORY = 32;
-
-function safeMapName(name: string): string {
-  return name.trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'wulfram-map';
-}
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -152,16 +148,21 @@ function RangeField({
 export function EditorApp() {
   const [manifest, setManifest] = useState<AssetManifest>();
   const [analysis, setAnalysis] = useState<MapAnalysis>();
+  const [baseTemplates, setBaseTemplates] = useState<BaseTemplateLibrary>();
   const [project, setProject] = useState<WulframProject>();
   const [mode, setMode] = useState<EditorMode>('terrain');
   const [terrainTool, setTerrainTool] = useState<TerrainTool>('sculpt');
   const [brushRadius, setBrushRadius] = useState(165);
   const [brushStrength, setBrushStrength] = useState(32);
+  const [textureBlend, setTextureBlend] = useState(72);
   const [selectedTexture, setSelectedTexture] = useState('canyon003');
   const [textureSearch, setTextureSearch] = useState('');
   const [texturePage, setTexturePage] = useState(0);
   const [team, setTeam] = useState(1);
   const [selectedPlacementKey, setSelectedPlacementKey] = useState('power');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>();
+  const [templateScale, setTemplateScale] = useState(1);
+  const [templateYaw, setTemplateYaw] = useState(0);
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [showGrid, setShowGrid] = useState(true);
   const [cursor, setCursor] = useState<Vec3>();
@@ -179,16 +180,19 @@ export function EditorApp() {
     let cancelled = false;
     async function load() {
       try {
-        const [assetsResponse, analysisResponse] = await Promise.all([
+        const [assetsResponse, analysisResponse, templatesResponse] = await Promise.all([
           fetch('/assets/manifest.json'),
           fetch('/assets/map-analysis.json'),
+          fetch('/assets/base-templates.json'),
         ]);
-        if (!assetsResponse.ok || !analysisResponse.ok) throw new Error('The extracted asset manifest is unavailable.');
+        if (!assetsResponse.ok || !analysisResponse.ok || !templatesResponse.ok) throw new Error('The extracted asset manifest is unavailable.');
         const assets = await assetsResponse.json() as AssetManifest;
         const mapAnalysis = await analysisResponse.json() as MapAnalysis;
+        const templateLibrary = await templatesResponse.json() as BaseTemplateLibrary;
         if (cancelled) return;
         setManifest(assets);
         setAnalysis(mapAnalysis);
+        setBaseTemplates(templateLibrary);
         if (assets.terrainTextures.canyon003 === undefined) {
           setSelectedTexture(Object.keys(assets.terrainTextures)[0] ?? '10martian001');
         }
@@ -329,6 +333,10 @@ export function EditorApp() {
     () => issues.filter((issue) => issue.entityId === selectedEntityId),
     [issues, selectedEntityId],
   );
+  const selectedTemplate = useMemo(
+    () => baseTemplates?.templates.find((template) => template.id === selectedTemplateId),
+    [baseTemplates, selectedTemplateId],
+  );
 
   const textureNames = useMemo(() => {
     if (!manifest) return [];
@@ -362,7 +370,7 @@ export function EditorApp() {
           const index = y * terrain.width + x;
           const falloff = Math.pow(1 - distance / Math.max(1, brushRadius), 1.65);
           if (terrainTool === 'paint') {
-            if (falloff > 0.2) terrain.textureIds[index] = textureId;
+            if (shouldPaintTextureVertex(x, y, textureId, falloff, brushStrength)) terrain.textureIds[index] = textureId;
           } else if (terrainTool === 'sculpt' || terrainTool === 'lower') {
             const direction = terrainTool === 'lower' ? -1 : 1;
             terrain.heights[index] += direction * brushStrength / 100 * 7 * falloff;
@@ -405,6 +413,27 @@ export function EditorApp() {
 
   const placeUnit = useCallback((x: number, y: number) => {
     if (!project) return;
+    if (selectedTemplate) {
+      const placement = instantiateBaseTemplate(
+        selectedTemplate,
+        project.terrain,
+        [x, y],
+        team,
+        templateScale,
+        templateYaw * Math.PI / 180,
+      );
+      if (!placement.entities.length) return;
+      mutate((draft) => { draft.entities.push(...placement.entities); });
+      setSelectedEntityId(undefined);
+      const autoFit = Math.abs(placement.scale - templateScale) > 0.001
+        ? ` · auto-fit ${placement.scale.toFixed(2)}×`
+        : '';
+      setNotice({
+        tone: 'ready',
+        text: `${selectedTemplate.name} placed · ${placement.entities.length} units terrain-conformed${autoFit}`,
+      });
+      return;
+    }
     const item = CATALOG.find((entry) => entry.key === selectedPlacementKey);
     if (!item) return;
     const defaultData = analysis?.turretDefaults[item.token];
@@ -422,7 +451,7 @@ export function EditorApp() {
     mutate((draft) => { draft.entities.push(entity); });
     setSelectedEntityId(entity.id);
     setNotice({ tone: 'ready', text: `${item.label} placed at ${x.toFixed(1)}, ${y.toFixed(1)}` });
-  }, [analysis, mutate, project, selectedPlacementKey, team]);
+  }, [analysis, mutate, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
 
   const updateSelected = useCallback((change: (entity: StateEntity) => void, record = true) => {
     if (!selectedEntityId) return;
@@ -487,14 +516,9 @@ export function EditorApp() {
 
       for (const file of files) {
         if (/\.zip$/i.test(file.name)) {
-          const zip = await JSZip.loadAsync(file);
           importedName = file.name.replace(/\.zip$/i, '');
-          for (const [name, entry] of Object.entries(zip.files)) {
-            if (entry.dir) continue;
-            const base = name.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
-            if (['land', 'state', 'tagmap', 'tagmap2', 'base-layout.json'].includes(base) || /\.(land|state|tagmap2?|json)$/i.test(base)) {
-              await consume(name, await entry.async('text'));
-            }
+          for (const entry of await readMapArchive(file)) {
+            await consume(entry.name, entry.text);
           }
         } else {
           await consume(file.name, await file.text());
@@ -561,16 +585,8 @@ export function EditorApp() {
     if (!project) return;
     try {
       setNotice({ tone: 'working', text: 'Packing original map files and JSON layout…' });
-      const zip = new JSZip();
-      const folder = zip.folder(safeMapName(project.name));
-      if (!folder) throw new Error('Unable to create the export package.');
-      folder.file('land', serializeLand(project.terrain));
-      folder.file('state', serializeState(project.entities));
-      folder.file('tagmap', serializeLines(project.terrain.tagmap));
-      folder.file('tagmap2', serializeLines(project.terrain.tagmap2));
-      folder.file('base-layout.json', `${JSON.stringify(toBaseLayout(project), null, 2)}\n`);
-      folder.file('wulfram-project.json', `${JSON.stringify(project)}\n`);
-      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      const archive = await createMapArchive(project);
+      const blob = new Blob([archive], { type: 'application/zip' });
       downloadBlob(blob, `${safeMapName(project.name)}.zip`);
       setDirty(false);
       setNotice({ tone: 'ready', text: 'Map ZIP exported with original and new-server formats' });
@@ -601,7 +617,7 @@ export function EditorApp() {
     setNotice({ tone: 'ready', text: 'Blank 129 × 129 map created' });
   }, [dirty, manifest, project, pushHistory]);
 
-  if (!manifest || !project) {
+  if (!manifest || !baseTemplates || !project) {
     return (
       <main className="loading-screen">
         <img alt="Wulfram II" src="/wulfram2-logo.png" />
@@ -613,7 +629,14 @@ export function EditorApp() {
 
   const errorCount = issues.filter((issue) => issue.severity === 'error').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
-  const modeLabel = mode === 'terrain' ? `${terrainTool[0].toUpperCase()}${terrainTool.slice(1)} terrain` : selectedPlacementKey ? `Place ${CATALOG.find((item) => item.key === selectedPlacementKey)?.label}` : 'Select units';
+  const activePlacementKey = selectedTemplate ? `template:${selectedTemplate.id}` : selectedPlacementKey;
+  const modeLabel = mode === 'terrain'
+    ? `${terrainTool[0].toUpperCase()}${terrainTool.slice(1)} terrain`
+    : selectedTemplate
+      ? `Place ${selectedTemplate.name}`
+      : selectedPlacementKey
+        ? `Place ${CATALOG.find((item) => item.key === selectedPlacementKey)?.label}`
+        : 'Select units';
 
   return (
     <main className="editor-shell">
@@ -725,15 +748,48 @@ export function EditorApp() {
                   <button className={team === 2 ? 'team-two active' : 'team-two'} onClick={() => setTeam(2)} type="button">TEAM 2</button>
                 </div>
               </section>
+              <section className="panel-section template-library">
+                <div className="section-heading"><p className="section-label">SHIPPED BASE TEMPLATES</p><span>{baseTemplates.templates.length}</span></div>
+                <select
+                  aria-label="Shipped base template"
+                  className="template-select"
+                  onChange={(event) => {
+                    const templateId = event.target.value || undefined;
+                    setSelectedTemplateId(templateId);
+                    if (templateId) setSelectedPlacementKey('');
+                    setSelectedEntityId(undefined);
+                  }}
+                  value={selectedTemplateId ?? ''}
+                >
+                  <option value="">Choose a discovered base…</option>
+                  {baseTemplates.templates.map((template) => (
+                    <option key={template.id} value={template.id}>{template.name} · {template.unitCount} units</option>
+                  ))}
+                </select>
+                {selectedTemplate && (
+                  <div className="template-controls">
+                    <div className="template-summary">
+                      <span><strong>{selectedTemplate.unitCount}</strong> units</span>
+                      <span>{Math.round(selectedTemplate.footprint.width)} × {Math.round(selectedTemplate.footprint.height)} u</span>
+                    </div>
+                    <RangeField label="Footprint scale" max={1.5} min={0.5} onChange={setTemplateScale} step={0.05} suffix="×" value={templateScale} />
+                    <RangeField label="Formation yaw" max={360} min={0} onChange={setTemplateYaw} step={5} suffix="°" value={templateYaw} />
+                    <div className="rotation-presets template-rotation-presets">
+                      {[0, 90, 180, 270].map((degrees) => <button key={degrees} onClick={() => setTemplateYaw(degrees)} type="button">{degrees}°</button>)}
+                    </div>
+                    <p className="field-help">Click the terrain to place. The footprint auto-fits map bounds and every unit keeps its original ground clearance.</p>
+                  </div>
+                )}
+              </section>
               <section className="catalog-list">
                 {(['infrastructure', 'defense', 'support', 'logistics'] as const).map((category) => (
                   <div className="catalog-group" key={category}>
                     <p className="section-label">{category.toUpperCase()}</p>
                     {CATALOG.filter((item) => item.category === category).map((item) => (
                       <button
-                        className={selectedPlacementKey === item.key ? 'catalog-item active' : 'catalog-item'}
+                        className={!selectedTemplate && selectedPlacementKey === item.key ? 'catalog-item active' : 'catalog-item'}
                         key={item.key}
-                        onClick={() => { setSelectedPlacementKey(item.key); setSelectedEntityId(undefined); }}
+                        onClick={() => { setSelectedPlacementKey(item.key); setSelectedTemplateId(undefined); setSelectedEntityId(undefined); }}
                         type="button"
                       >
                         <span className={`catalog-glyph team-${team}`}>{item.shortLabel}</span>
@@ -775,10 +831,11 @@ export function EditorApp() {
             onSelectEntity={setSelectedEntityId}
             onTerrainStroke={onTerrainStroke}
             selectedEntityId={selectedEntityId}
-            selectedPlacementKey={selectedPlacementKey}
+            selectedPlacementKey={activePlacementKey}
             serviceRadius={project.validation.serviceRadius}
             showGrid={showGrid}
             terrain={project.terrain}
+            textureBlend={textureBlend}
             terrainTool={terrainTool}
           />
           <footer className={`statusbar ${notice.tone}`}>
@@ -799,8 +856,9 @@ export function EditorApp() {
               <section className="inspector-block">
                 <RangeField label="Radius" max={600} min={25} onChange={setBrushRadius} step={5} suffix=" u" value={brushRadius} />
                 <RangeField label="Strength" max={100} min={1} onChange={setBrushStrength} suffix="%" value={brushStrength} />
+                <RangeField label="Texture blend" max={100} min={0} onChange={setTextureBlend} suffix="%" value={textureBlend} />
                 <div className="brush-profile"><span /><span /><span /></div>
-                <p className="field-help">Soft radial falloff. Drag with the left mouse button; orbit with the right.</p>
+                <p className="field-help">Soft radial falloff. Texture blend controls terrain-material transitions without changing original texture IDs. Drag with the left mouse button; orbit with the right.</p>
               </section>
               {terrainTool === 'paint' && (
                 <section className="inspector-block selected-texture">
@@ -879,10 +937,18 @@ export function EditorApp() {
           ) : (
             <>
               <div className="inspector-heading">
-                <span>BASE BUILDER</span>
-                <h2>Placement rules</h2>
-                <Badge variant="secondary">{project.entities.filter((entity) => entity.token !== '*').length} UNITS</Badge>
+                <span>{selectedTemplate ? 'BASE TEMPLATE' : 'BASE BUILDER'}</span>
+                <h2>{selectedTemplate?.name ?? 'Placement rules'}</h2>
+                <Badge variant="secondary">{selectedTemplate ? `${selectedTemplate.unitCount} UNIT TEMPLATE` : `${project.entities.filter((entity) => entity.token !== '*').length} UNITS`}</Badge>
               </div>
+              {selectedTemplate && (
+                <section className="inspector-block template-detail">
+                  <div><span>Source map</span><strong>{selectedTemplate.sourceMap}</strong></div>
+                  <div><span>Original team</span><strong>{selectedTemplate.sourceTeam}</strong></div>
+                  <div><span>Footprint</span><strong>{Math.round(selectedTemplate.footprint.width)} × {Math.round(selectedTemplate.footprint.height)} u</strong></div>
+                  <p>Placement remaps the formation to Team {team}, rotates and scales its XY offsets, then samples the destination terrain independently beneath every unit.</p>
+                </section>
+              )}
               <section className="inspector-block validation-summary">
                 <div><strong className={errorCount ? 'has-errors' : ''}>{errorCount}</strong><span>Errors</span></div>
                 <div><strong>{warningCount}</strong><span>Warnings</span></div>

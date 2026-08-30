@@ -73,10 +73,14 @@ assert.ok(validation.some((issue) => issue.entityId === 'gun-unpowered' && issue
 const manifest = JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'assets', 'manifest.json'), 'utf8'));
 assert.ok(Object.keys(manifest.terrainTextures).length >= 490);
 assert.ok(Object.keys(manifest.models).length >= 19);
+const baseTemplates = JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'assets', 'base-templates.json'), 'utf8'));
+assert.equal(baseTemplates.format, 'wulfram-base-template-library');
+assert.equal(baseTemplates.templates.length, manifest.baseTemplates.count);
+assert.ok(baseTemplates.templates.length >= 70);
 for (const asset of [...Object.values(manifest.models), ...Object.values(manifest.terrainTextures).slice(0, 5)]) {
   assert.ok(fs.existsSync(path.join(workspace, 'public', asset.url)), `Missing extracted asset ${asset.url}`);
 }
 JSON.parse(fs.readFileSync(path.join(workspace, 'public', 'schemas', 'wulfram-base-layout-v1.schema.json'), 'utf8'));
 assert.deepEqual(cloneProject(validationFixture), validationFixture);
 
-console.log(`Verified ${terrain.heights.length.toLocaleString()} terrain vertices, ${entities.length} state entities, JSON round-trips, power rules, and extracted assets.`);
+console.log(`Verified ${terrain.heights.length.toLocaleString()} terrain vertices, ${entities.length} state entities, ${baseTemplates.templates.length} base templates, JSON round-trips, power rules, and extracted assets.`);

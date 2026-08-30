@@ -5,9 +5,10 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 ## What works
 
 - Full map lifecycle: new map, import, edit, validate, local save/autosave, undo/redo, and ZIP export.
-- Terrain mode with raise, lower, level, smooth, and original-texture paint brushes.
+- Terrain mode with raise, lower, level, smooth, and original-texture paint brushes. Painting uses stable edge feathering, while the viewport performs normalized multi-texture blending with an adjustable transition width.
 - Grayscale image import, resampled into the active terrain grid with configurable black/white heights.
 - Base Builder mode with team placement, original models where shipped, rotation/position editing, cargo subtypes, and uplinks.
+- A 73-template shipped-base library extracted from powered formations across 19 maps. Whole bases can be team-remapped, rotated, footprint-scaled, auto-fit inside map bounds, and terrain-conformed unit by unit.
 - Placement validation for bounds, slope, spacing, ground height, power coverage, primary-cell overlap, and backup-cell areas.
 - Original `land`, `state`, `tagmap`, and `tagmap2` import/export.
 - `wulfram-base-layout` JSON v1 import/export, included in every map ZIP with an editor project backup.
@@ -27,9 +28,12 @@ Verification:
 
 ```bash
 npm run lint
+npm test
 npm run verify:formats
 npm run build
 ```
+
+`npm test` discovers every original map under `../wulfram-debug/data/maps` (or `WULFRAM_MAPS_DIR`), then runs each through the actual editor writers and ZIP packager. It reloads the generated files and compares terrain dimensions, every height and texture index, tag maps, unit order/types, cargo subtypes, teams, positions, rotations, active flags, JSON layout, and browser backup. It also matches all extracted template units back to their source state rows and tests terrain fitting plus normalized texture-blend weights. The checked-in Crossroads map is used as a portable fallback when the sibling asset tree is unavailable.
 
 ## Asset extraction
 

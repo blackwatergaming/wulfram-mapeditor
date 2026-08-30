@@ -2,7 +2,7 @@
 
 Updated: 2026-08-30
 
-## In progress
+## Completed
 
 - [x] Confirmed the target GitHub repository exists and is empty.
 - [x] Scaffolded the browser application with the Sites/React toolchain.
@@ -16,6 +16,9 @@ Updated: 2026-08-30
 - [x] Add original map import/export plus versioned JSON base-layout import/export for the new server.
 - [x] Add undo/redo and local project persistence.
 - [x] Validate type safety, lint, map-format round trips, asset references, the production build, and the local HTTP route.
+- [x] Add an original-map regression suite that validates the shared writers and ZIP packager by loading, exporting, reopening, and comparing shipped maps.
+- [x] Extract powered bases from shipped state files into reusable whole-base templates with team, scale, rotation, bounds fitting, and per-unit terrain conformance.
+- [x] Replace hard texture blocks with normalized multi-texture transitions and stable feathered paint edges, with an adjustable blend control.
 - [x] Commit and push the completed editor to `blackwatergaming/wulfram-mapeditor`.
 
 ## Findings
@@ -31,9 +34,13 @@ Updated: 2026-08-30
 - Dense shipped placements support offline defaults of 300 units for service and 80 units for backup; both remain editable because live servers supply the authoritative values.
 - Every exported ZIP now carries original-format files, `base-layout.json`, and a browser-project backup.
 - The format verification suite round-trips the 16,641-vertex Crossroads land file and all 69 state entities, and exercises the Ghidra-derived power rules.
-- Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
+- The full regression suite round-trips all 47 discovered original maps (782,127 terrain vertices) and 44 state files (1,615 entities), then packages, reloads, and compares all 47 ZIPs. It also verifies deterministic ZIP output and falls back to the checked-in Crossroads fixture outside the source workspace.
+- Powered connected-component analysis found 73 reusable bases across 19 shipped maps, containing 832 original units. Nearby cargo, uplinks, and supply ships attach only to their nearest base, avoiding duplication.
+- Template tests match all 832 units back to their source state rows and source terrain heights, then verify team remapping, rotation, footprint auto-fit, bounds clamping, and destination-terrain conformance.
+- Terrain material rendering now keeps original categorical texture IDs on disk while producing normalized, adjustable transitions in the viewport; the paint brush uses deterministic feathering so repeated strokes remain stable.
+- Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
-- The target GitHub repository currently has no commits, so this project will establish its initial history.
+- The editor is committed and pushed to the `main` branch of `blackwatergaming/wulfram-mapeditor`.
 
 ## Notes
 
