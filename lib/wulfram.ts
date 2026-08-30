@@ -103,6 +103,15 @@ export interface BaseTemplatePlacement {
   entities: StateEntity[];
   scale: number;
   anchor: [number, number];
+  skippedWithoutModel: number;
+}
+
+export interface TerrainSnapResult {
+  height: number;
+  pitch: number;
+  roll: number;
+  groundHeight: number;
+  safetyLift: number;
 }
 
 export interface ShapeModel {
@@ -357,6 +366,68 @@ export function sampleSlopeDegrees(terrain: TerrainData, worldX: number, worldY:
   return Math.atan(Math.hypot(sx, sy)) * 180 / Math.PI;
 }
 
+export function usesFootprintTerrainSnap(token: string): boolean {
+  return token === 'e' || token === 'r' || token === 'L' || token === 'p';
+}
+
+/**
+ * Fits a plane to a structure-sized 3 × 3 terrain footprint, aligns the
+ * structure's local up axis to that plane, then lifts its origin until every
+ * sampled point clears the terrain. The final margin prevents coplanar flicker
+ * and small triangle-to-model penetrations.
+ */
+export function snapStructureToTerrain(
+  terrain: TerrainData,
+  worldX: number,
+  worldY: number,
+  footprint: number,
+  yawRadians: number,
+  groundOffset: number,
+  margin = 0.75,
+): TerrainSnapResult {
+  const halfExtent = Math.max(0.5, Math.abs(footprint) * 0.5);
+  const yaw = Number.isFinite(yawRadians) ? yawRadians : 0;
+  const cosine = Math.cos(yaw);
+  const sine = Math.sin(yaw);
+  const samples: Array<{ dx: number; dy: number; height: number }> = [];
+  for (const localY of [-halfExtent, 0, halfExtent]) {
+    for (const localX of [-halfExtent, 0, halfExtent]) {
+      const dx = localX * cosine - localY * sine;
+      const dy = localX * sine + localY * cosine;
+      samples.push({ dx, dy, height: sampleHeight(terrain, worldX + dx, worldY + dy) });
+    }
+  }
+
+  const meanHeight = samples.reduce((total, sample) => total + sample.height, 0) / samples.length;
+  const xx = samples.reduce((total, sample) => total + sample.dx * sample.dx, 0);
+  const yy = samples.reduce((total, sample) => total + sample.dy * sample.dy, 0);
+  const xy = samples.reduce((total, sample) => total + sample.dx * sample.dy, 0);
+  const xh = samples.reduce((total, sample) => total + sample.dx * (sample.height - meanHeight), 0);
+  const yh = samples.reduce((total, sample) => total + sample.dy * (sample.height - meanHeight), 0);
+  const determinant = xx * yy - xy * xy;
+  const slopeX = Math.abs(determinant) > 1e-9 ? (xh * yy - yh * xy) / determinant : 0;
+  const slopeY = Math.abs(determinant) > 1e-9 ? (yh * xx - xh * xy) / determinant : 0;
+  const highestResidual = samples.reduce(
+    (highest, sample) => Math.max(highest, sample.height - (meanHeight + slopeX * sample.dx + slopeY * sample.dy)),
+    0,
+  );
+  const localSlopeX = slopeX * cosine + slopeY * sine;
+  const localSlopeY = -slopeX * sine + slopeY * cosine;
+  const pitch = Math.atan2(localSlopeY, Math.sqrt(1 + localSlopeX * localSlopeX));
+  const roll = Math.atan2(-localSlopeX, 1);
+  const safeGroundOffset = Number.isFinite(groundOffset) ? groundOffset : 0;
+  const safeMargin = Number.isFinite(margin) ? Math.max(0, margin) : 0;
+  const safetyLift = highestResidual + safeMargin;
+
+  return {
+    height: meanHeight + safeGroundOffset + safetyLift,
+    pitch,
+    roll,
+    groundHeight: sampleHeight(terrain, worldX, worldY),
+    safetyLift,
+  };
+}
+
 export function instantiateBaseTemplate(
   template: BaseTemplate,
   terrain: TerrainData,
@@ -364,13 +435,20 @@ export function instantiateBaseTemplate(
   team: number,
   requestedScale = 1,
   yawRadians = 0,
+  manifest?: AssetManifest,
 ): BaseTemplatePlacement {
-  if (!template.units.length) return { entities: [], scale: requestedScale, anchor: requestedAnchor };
+  const units = template.units.filter((unit) => {
+    const entity = { token: unit.token, subtype: unit.subtype, team };
+    const modelName = modelNameFor(entity);
+    return Boolean(modelName && (!manifest || manifest.models[modelName]));
+  });
+  const skippedWithoutModel = template.units.length - units.length;
+  if (!units.length) return { entities: [], scale: requestedScale, anchor: requestedAnchor, skippedWithoutModel };
   const safeScale = Number.isFinite(requestedScale) ? Math.max(0.1, requestedScale) : 1;
   const safeYaw = Number.isFinite(yawRadians) ? yawRadians : 0;
   const cosine = Math.cos(safeYaw);
   const sine = Math.sin(safeYaw);
-  const rotatedOffsets = template.units.map((unit) => [
+  const rotatedOffsets = units.map((unit) => [
     unit.offset[0] * cosine - unit.offset[1] * sine,
     unit.offset[0] * sine + unit.offset[1] * cosine,
   ] as [number, number]);
@@ -398,27 +476,32 @@ export function instantiateBaseTemplate(
     Math.max(lowerAnchorY, Math.min(upperAnchorY, requestedAnchor[1])),
   ];
   const normalizedYaw = (value: number) => (value % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-  const entities = template.units.map((unit, index): StateEntity => {
+  const entities = units.map((unit, index): StateEntity => {
     const x = anchor[0] + rotatedOffsets[index][0] * scale;
     const y = anchor[1] + rotatedOffsets[index][1] * scale;
+    const yaw = normalizedYaw(unit.rotation[2] + safeYaw);
+    const item = CATALOG.find((candidate) => candidate.token === unit.token && (unit.token !== 'c' || candidate.subtype === unit.subtype));
+    const snap = usesFootprintTerrainSnap(unit.token)
+      ? snapStructureToTerrain(terrain, x, y, (item?.footprint ?? 10) * scale, yaw, unit.groundOffset)
+      : undefined;
     return {
       id: createId(`${template.id}-${index + 1}`),
       token: unit.token,
       subtype: unit.subtype,
       team: Math.trunc(team),
-      position: [x, y, sampleHeight(terrain, x, y) + (Number.isFinite(unit.groundOffset) ? unit.groundOffset : 0)],
-      rotation: [unit.rotation[0], unit.rotation[1], normalizedYaw(unit.rotation[2] + safeYaw)],
+      position: [x, y, snap?.height ?? sampleHeight(terrain, x, y) + (Number.isFinite(unit.groundOffset) ? unit.groundOffset : 0)],
+      rotation: [snap?.pitch ?? unit.rotation[0], snap?.roll ?? unit.rotation[1], yaw],
       active: Math.trunc(unit.active),
     };
   });
-  return { entities, scale, anchor };
+  return { entities, scale, anchor, skippedWithoutModel };
 }
 
 export function catalogFor(entity: StateEntity): CatalogItem | undefined {
   return CATALOG.find((item) => item.token === entity.token && (entity.token !== 'c' || item.subtype === entity.subtype));
 }
 
-export function modelNameFor(entity: StateEntity): string | undefined {
+export function modelNameFor(entity: Pick<StateEntity, 'token' | 'team'>): string | undefined {
   const team = entity.team === 2 ? 2 : 1;
   const models: Record<string, string> = {
     e: `energy_${team}`,
@@ -433,6 +516,18 @@ export function modelNameFor(entity: StateEntity): string | undefined {
     c: 'cargo',
   };
   return models[entity.token];
+}
+
+export function hasModelForEntity(
+  entity: Pick<StateEntity, 'token' | 'subtype' | 'team'>,
+  manifest: AssetManifest,
+): boolean {
+  const name = modelNameFor(entity);
+  return Boolean(name && manifest.models[name]);
+}
+
+export function catalogItemHasModel(item: CatalogItem, team: number, manifest: AssetManifest): boolean {
+  return hasModelForEntity({ token: item.token, subtype: item.subtype, team }, manifest);
 }
 
 export function validateProject(project: WulframProject): ValidationIssue[] {

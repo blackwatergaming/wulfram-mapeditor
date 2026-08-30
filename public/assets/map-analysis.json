@@ -81,6 +81,36 @@
       "medianTiltDegrees": 7.9
     }
   },
+  "placementDefaults": {
+    "e": {
+      "name": "Power Cell",
+      "sampleCount": 166,
+      "heightOffset": 2.983,
+      "snapMargin": 0.75,
+      "method": "3x3 footprint plane, highest residual clearance, then safety margin"
+    },
+    "r": {
+      "name": "Repair Pad",
+      "sampleCount": 89,
+      "heightOffset": 3.853,
+      "snapMargin": 0.75,
+      "method": "3x3 footprint plane, highest residual clearance, then safety margin"
+    },
+    "L": {
+      "name": "Missile Launcher",
+      "sampleCount": 9,
+      "heightOffset": 3.2,
+      "snapMargin": 0.75,
+      "method": "3x3 footprint plane, highest residual clearance, then safety margin"
+    },
+    "p": {
+      "name": "Skypump",
+      "sampleCount": 12,
+      "heightOffset": 4.528,
+      "snapMargin": 0.75,
+      "method": "3x3 footprint plane, highest residual clearance, then safety margin"
+    }
+  },
   "powerCell": {
     "serviceRadius": 300,
     "backupRadius": 80,

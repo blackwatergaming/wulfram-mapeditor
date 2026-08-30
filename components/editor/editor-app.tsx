@@ -26,6 +26,7 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
 import { TerrainViewport, type EditorMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
 import { shouldPaintTextureVertex } from '@/lib/terrain-blend';
@@ -34,10 +35,12 @@ import {
   DEFAULT_VALIDATION,
   ENTITY_NAMES,
   catalogFor,
+  catalogItemHasModel,
   cloneProject,
   createBlankProject,
   createId,
   ensureTextureTag,
+  hasModelForEntity,
   instantiateBaseTemplate,
   parseBaseLayout,
   parseLand,
@@ -45,7 +48,9 @@ import {
   parseState,
   sampleHeight,
   sampleSlopeDegrees,
+  snapStructureToTerrain,
   toBaseLayout,
+  usesFootprintTerrainSnap,
   validateProject,
   type AssetManifest,
   type BaseTemplateLibrary,
@@ -61,6 +66,13 @@ interface MapAnalysis {
     roll: number;
     yawCircularMean: number;
     sampleCount: number;
+  }>;
+  placementDefaults: Record<string, {
+    heightOffset: number;
+    method: string;
+    name: string;
+    sampleCount: number;
+    snapMargin: number;
   }>;
   powerCell: {
     serviceRadius: number;
@@ -348,12 +360,24 @@ export function EditorApp() {
   const texturePageCount = Math.max(1, Math.ceil(textureNames.length / 18));
   const activeTexturePage = Math.min(texturePage, texturePageCount - 1);
   const visibleTextures = textureNames.slice(activeTexturePage * 18, activeTexturePage * 18 + 18);
+  const placeableCatalog = useMemo(
+    () => manifest ? CATALOG.filter((item) => catalogItemHasModel(item, team, manifest)) : [],
+    [manifest, team],
+  );
 
   const applyBrush = useCallback((worldX: number, worldY: number) => {
-    if (!project || !manifest) return;
-    mutate((draft) => {
-      const terrain = draft.terrain;
-      const sourceHeights = terrainTool === 'smooth' ? [...terrain.heights] : terrain.heights;
+    if (!manifest) return;
+    setProject((current) => {
+      if (!current) return current;
+      const painting = terrainTool === 'paint';
+      const terrain = {
+        ...current.terrain,
+        heights: painting ? current.terrain.heights : [...current.terrain.heights],
+        textureIds: painting ? [...current.terrain.textureIds] : current.terrain.textureIds,
+        tagmap: painting ? [...current.terrain.tagmap] : current.terrain.tagmap,
+        tagmap2: painting ? [...current.terrain.tagmap2] : current.terrain.tagmap2,
+      };
+      const sourceHeights = terrainTool === 'smooth' ? current.terrain.heights : terrain.heights;
       const cellX = terrain.worldWidth / Math.max(1, terrain.width - 1);
       const cellY = terrain.worldHeight / Math.max(1, terrain.height - 1);
       const minX = Math.max(0, Math.floor((worldX - brushRadius) / cellX));
@@ -393,8 +417,10 @@ export function EditorApp() {
           }
         }
       }
-    }, false);
-  }, [brushRadius, brushStrength, manifest, mutate, project, selectedTexture, terrainTool]);
+      return { ...current, terrain, updatedAt: new Date().toISOString() };
+    });
+    setDirty(true);
+  }, [brushRadius, brushStrength, manifest, selectedTexture, terrainTool]);
 
   const onTerrainStroke = useCallback((x: number, y: number, phase: StrokePhase) => {
     if (!project) return;
@@ -411,6 +437,29 @@ export function EditorApp() {
     }
   }, [applyBrush, project, pushHistory]);
 
+  const conformEntityToTerrain = useCallback((entity: StateEntity, terrain: WulframProject['terrain']) => {
+    const item = catalogFor(entity);
+    const placementDefault = analysis?.placementDefaults?.[entity.token];
+    const turretDefault = analysis?.turretDefaults[entity.token];
+    const groundOffset = placementDefault?.heightOffset ?? turretDefault?.heightOffset ?? 0;
+    if (usesFootprintTerrainSnap(entity.token)) {
+      const snap = snapStructureToTerrain(
+        terrain,
+        entity.position[0],
+        entity.position[1],
+        item?.footprint ?? 10,
+        entity.rotation[2],
+        groundOffset,
+        placementDefault?.snapMargin ?? 0.75,
+      );
+      entity.position[2] = snap.height;
+      entity.rotation[0] = snap.pitch;
+      entity.rotation[1] = snap.roll;
+    } else {
+      entity.position[2] = sampleHeight(terrain, entity.position[0], entity.position[1]) + groundOffset;
+    }
+  }, [analysis]);
+
   const placeUnit = useCallback((x: number, y: number) => {
     if (!project) return;
     if (selectedTemplate) {
@@ -421,6 +470,7 @@ export function EditorApp() {
         team,
         templateScale,
         templateYaw * Math.PI / 180,
+        manifest,
       );
       if (!placement.entities.length) return;
       mutate((draft) => { draft.entities.push(...placement.entities); });
@@ -430,28 +480,33 @@ export function EditorApp() {
         : '';
       setNotice({
         tone: 'ready',
-        text: `${selectedTemplate.name} placed · ${placement.entities.length} units terrain-conformed${autoFit}`,
+        text: `${selectedTemplate.name} placed · ${placement.entities.length} modeled units terrain-conformed${placement.skippedWithoutModel ? ` · ${placement.skippedWithoutModel} removed omitted` : ''}${autoFit}`,
       });
       return;
     }
-    const item = CATALOG.find((entry) => entry.key === selectedPlacementKey);
+    const item = placeableCatalog.find((entry) => entry.key === selectedPlacementKey);
     if (!item) return;
     const defaultData = analysis?.turretDefaults[item.token];
+    const placementDefault = analysis?.placementDefaults?.[item.token];
     const ground = sampleHeight(project.terrain, x, y);
-    const offset = defaultData?.heightOffset ?? 0;
+    const offset = placementDefault?.heightOffset ?? defaultData?.heightOffset ?? 0;
+    const yaw = defaultData?.yawCircularMean ?? 0;
+    const snap = usesFootprintTerrainSnap(item.token)
+      ? snapStructureToTerrain(project.terrain, x, y, item.footprint, yaw, offset, placementDefault?.snapMargin ?? 0.75)
+      : undefined;
     const entity: StateEntity = {
       id: createId(item.key),
       token: item.token,
       subtype: item.subtype,
       team,
-      position: [x, y, ground + offset],
-      rotation: [defaultData?.pitch ?? 0, defaultData?.roll ?? 0, defaultData?.yawCircularMean ?? 0],
+      position: [x, y, snap?.height ?? ground + offset],
+      rotation: [snap?.pitch ?? defaultData?.pitch ?? 0, snap?.roll ?? defaultData?.roll ?? 0, yaw],
       active: 1,
     };
     mutate((draft) => { draft.entities.push(entity); });
     setSelectedEntityId(entity.id);
     setNotice({ tone: 'ready', text: `${item.label} placed at ${x.toFixed(1)}, ${y.toFixed(1)}` });
-  }, [analysis, mutate, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
+  }, [analysis, manifest, mutate, placeableCatalog, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
 
   const updateSelected = useCallback((change: (entity: StateEntity) => void, record = true) => {
     if (!selectedEntityId) return;
@@ -744,6 +799,7 @@ export function EditorApp() {
               <section className="panel-section">
                 <div className="section-heading"><p className="section-label">BUILD TEAM</p><span>STATE {team}</span></div>
                 <div className="team-switch">
+                  <button className={team === 0 ? 'team-neutral active' : 'team-neutral'} onClick={() => setTeam(0)} type="button">NEUTRAL</button>
                   <button className={team === 1 ? 'team-one active' : 'team-one'} onClick={() => setTeam(1)} type="button">TEAM 1</button>
                   <button className={team === 2 ? 'team-two active' : 'team-two'} onClick={() => setTeam(2)} type="button">TEAM 2</button>
                 </div>
@@ -768,8 +824,9 @@ export function EditorApp() {
                 </select>
                 {selectedTemplate && (
                   <div className="template-controls">
+                    <BaseTemplatePreview manifest={manifest} scale={templateScale} team={team} template={selectedTemplate} yawDegrees={templateYaw} />
                     <div className="template-summary">
-                      <span><strong>{selectedTemplate.unitCount}</strong> units</span>
+                      <span><strong>{selectedTemplate.units.filter((unit) => hasModelForEntity({ token: unit.token, subtype: unit.subtype, team }, manifest)).length}</strong> modeled units</span>
                       <span>{Math.round(selectedTemplate.footprint.width)} × {Math.round(selectedTemplate.footprint.height)} u</span>
                     </div>
                     <RangeField label="Footprint scale" max={1.5} min={0.5} onChange={setTemplateScale} step={0.05} suffix="×" value={templateScale} />
@@ -777,7 +834,7 @@ export function EditorApp() {
                     <div className="rotation-presets template-rotation-presets">
                       {[0, 90, 180, 270].map((degrees) => <button key={degrees} onClick={() => setTemplateYaw(degrees)} type="button">{degrees}°</button>)}
                     </div>
-                    <p className="field-help">Click the terrain to place. The footprint auto-fits map bounds and every unit keeps its original ground clearance.</p>
+                    <p className="field-help">Click the terrain to place. The footprint auto-fits map bounds; pads, cells, missile launchers, and skypumps align and clear their full slope footprint.</p>
                   </div>
                 )}
               </section>
@@ -785,7 +842,7 @@ export function EditorApp() {
                 {(['infrastructure', 'defense', 'support', 'logistics'] as const).map((category) => (
                   <div className="catalog-group" key={category}>
                     <p className="section-label">{category.toUpperCase()}</p>
-                    {CATALOG.filter((item) => item.category === category).map((item) => (
+                    {placeableCatalog.filter((item) => item.category === category).map((item) => (
                       <button
                         className={!selectedTemplate && selectedPlacementKey === item.key ? 'catalog-item active' : 'catalog-item'}
                         key={item.key}
@@ -885,32 +942,37 @@ export function EditorApp() {
               <div className="inspector-heading">
                 <span>SELECTED UNIT</span>
                 <h2>{catalogFor(selectedEntity)?.label ?? ENTITY_NAMES[selectedEntity.token] ?? selectedEntity.token}</h2>
-                <Badge className={selectedEntity.team === 2 ? 'badge-team-two' : 'badge-team-one'}>TEAM {selectedEntity.team}</Badge>
+                <Badge className={selectedEntity.team === 0 ? 'badge-team-neutral' : selectedEntity.team === 2 ? 'badge-team-two' : 'badge-team-one'}>{selectedEntity.team === 0 ? 'NEUTRAL' : `TEAM ${selectedEntity.team}`}</Badge>
               </div>
               <section className="inspector-block">
                 <p className="section-label">POSITION</p>
                 <div className="number-grid three">
                   {(['X', 'Y', 'Z'] as const).map((label, index) => (
-                    <NumberField key={label} label={label} onChange={(value) => updateSelected((entity) => { entity.position[index] = value; })} step={0.1} value={selectedEntity.position[index]} />
+                    <NumberField key={label} label={label} onChange={(value) => updateSelected((entity) => {
+                      entity.position[index] = value;
+                      if (index !== 2 && usesFootprintTerrainSnap(entity.token)) conformEntityToTerrain(entity, project.terrain);
+                    })} step={0.1} value={selectedEntity.position[index]} />
                   ))}
                 </div>
-                <button className="secondary-action" onClick={() => updateSelected((entity) => {
-                  const ground = sampleHeight(project.terrain, entity.position[0], entity.position[1]);
-                  const offset = analysis?.turretDefaults[entity.token]?.heightOffset ?? 0;
-                  entity.position[2] = ground + offset;
-                })} type="button"><Mountain /> Snap to derived ground height</button>
+                <button className="secondary-action" onClick={() => updateSelected((entity) => conformEntityToTerrain(entity, project.terrain))} type="button"><Mountain /> Snap and conform to footprint</button>
               </section>
               <section className="inspector-block">
                 <RangeField
                   label="Yaw"
                   max={360}
                   min={0}
-                  onChange={(degrees) => updateSelected((entity) => { entity.rotation[2] = degrees * Math.PI / 180; }, false)}
+                  onChange={(degrees) => updateSelected((entity) => {
+                    entity.rotation[2] = degrees * Math.PI / 180;
+                    if (usesFootprintTerrainSnap(entity.token)) conformEntityToTerrain(entity, project.terrain);
+                  }, false)}
                   suffix="°"
                   value={(selectedEntity.rotation[2] * 180 / Math.PI + 360) % 360}
                 />
                 <div className="rotation-presets">
-                  {[0, 45, 90, 180, 270].map((degrees) => <button key={degrees} onClick={() => updateSelected((entity) => { entity.rotation[2] = degrees * Math.PI / 180; })} type="button">{degrees}°</button>)}
+                  {[0, 45, 90, 180, 270].map((degrees) => <button key={degrees} onClick={() => updateSelected((entity) => {
+                    entity.rotation[2] = degrees * Math.PI / 180;
+                    if (usesFootprintTerrainSnap(entity.token)) conformEntityToTerrain(entity, project.terrain);
+                  })} type="button">{degrees}°</button>)}
                 </div>
                 <div className="number-grid two">
                   <NumberField label="Pitch rad" onChange={(value) => updateSelected((entity) => { entity.rotation[0] = value; })} step={0.001} value={selectedEntity.rotation[0]} />
@@ -946,7 +1008,7 @@ export function EditorApp() {
                   <div><span>Source map</span><strong>{selectedTemplate.sourceMap}</strong></div>
                   <div><span>Original team</span><strong>{selectedTemplate.sourceTeam}</strong></div>
                   <div><span>Footprint</span><strong>{Math.round(selectedTemplate.footprint.width)} × {Math.round(selectedTemplate.footprint.height)} u</strong></div>
-                  <p>Placement remaps the formation to Team {team}, rotates and scales its XY offsets, then samples the destination terrain independently beneath every unit.</p>
+                  <p>Placement remaps the formation to {team === 0 ? 'Neutral' : `Team ${team}`}, rotates and scales its XY offsets, then conforms modeled units to the destination terrain.</p>
                 </section>
               )}
               <section className="inspector-block validation-summary">

@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-import { textureBlendContributions } from '@/lib/terrain-blend';
+import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls';
+import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
 import { catalogFor, modelNameFor, resolveTextureName } from '@/lib/wulfram';
 
@@ -34,6 +35,7 @@ interface TerrainViewportProps {
 const shapeCache = new Map<string, Promise<ShapeModel>>();
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 const texturePixelCache = new Map<string, Promise<TexturePixels>>();
+const materialTextureCache = new Map<string, THREE.Texture>();
 
 interface TexturePixels {
   width: number;
@@ -141,6 +143,17 @@ function terrainGeometry(terrain: TerrainData, scale: number): THREE.BufferGeome
   return geometry;
 }
 
+function updateTerrainHeights(geometry: THREE.BufferGeometry, terrain: TerrainData, scale: number) {
+  const positions = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!positions || positions.count !== terrain.width * terrain.height) return;
+  for (let index = 0; index < positions.count; index += 1) {
+    positions.setY(index, (terrain.heights[index] ?? 0) * scale);
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+}
+
 async function paintTerrainCanvas(
   canvas: HTMLCanvasElement,
   terrain: TerrainData,
@@ -148,6 +161,7 @@ async function paintTerrainCanvas(
   texture: THREE.CanvasTexture,
   blendStrength: number,
   cancelled: () => boolean,
+  invalidate: () => void,
 ) {
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) return;
@@ -166,6 +180,7 @@ async function paintTerrainCanvas(
     }
   }
   texture.needsUpdate = true;
+  invalidate();
 
   const used = new Set(terrain.textureIds.map((id) => names[id]).filter(Boolean) as string[]);
   const loaded = new Map<number, TexturePixels>();
@@ -191,6 +206,8 @@ async function paintTerrainCanvas(
   }
   const maximumGridX = terrain.width - 1;
   const maximumGridY = terrain.height - 1;
+  const ids: [number, number, number, number] = [0, 0, 0, 0];
+  const weights: [number, number, number, number] = [0, 0, 0, 0];
   for (let pixelY = 0; pixelY < canvas.height; pixelY += 1) {
     const gridY = pixelY / Math.max(1, canvas.height - 1) * maximumGridY;
     const y0 = Math.min(maximumGridY, Math.floor(gridY));
@@ -201,30 +218,31 @@ async function paintTerrainCanvas(
       const x0 = Math.min(maximumGridX, Math.floor(gridX));
       const x1 = Math.min(maximumGridX, x0 + 1);
       const fractionX = gridX - x0;
-      const ids: [number, number, number, number] = [
-        terrain.textureIds[y0 * terrain.width + x0] ?? 0,
-        terrain.textureIds[y0 * terrain.width + x1] ?? 0,
-        terrain.textureIds[y1 * terrain.width + x0] ?? 0,
-        terrain.textureIds[y1 * terrain.width + x1] ?? 0,
-      ];
-      const contributions = textureBlendContributions(ids, fractionX, fractionY, softness, ((x0 ^ y0) & 1) === 1);
+      ids[0] = terrain.textureIds[y0 * terrain.width + x0] ?? 0;
+      ids[1] = terrain.textureIds[y0 * terrain.width + x1] ?? 0;
+      ids[2] = terrain.textureIds[y1 * terrain.width + x0] ?? 0;
+      ids[3] = terrain.textureIds[y1 * terrain.width + x1] ?? 0;
+      textureBlendWeights(fractionX, fractionY, softness, ((x0 ^ y0) & 1) === 1, weights);
       let red = 0;
       let green = 0;
       let blue = 0;
-      for (const contribution of contributions) {
-        const pixels = loaded.get(contribution.textureId);
+      for (let corner = 0; corner < 4; corner += 1) {
+        const weight = weights[corner];
+        if (!weight) continue;
+        const textureId = ids[corner];
+        const pixels = loaded.get(textureId);
         if (pixels) {
           const sourceX = Math.floor(pixelX % repeatPixels / repeatPixels * pixels.width) % pixels.width;
           const sourceY = Math.floor(pixelY % repeatPixels / repeatPixels * pixels.height) % pixels.height;
           const sourceIndex = (sourceY * pixels.width + sourceX) * 4;
-          red += pixels.data[sourceIndex] * contribution.weight;
-          green += pixels.data[sourceIndex + 1] * contribution.weight;
-          blue += pixels.data[sourceIndex + 2] * contribution.weight;
+          red += pixels.data[sourceIndex] * weight;
+          green += pixels.data[sourceIndex + 1] * weight;
+          blue += pixels.data[sourceIndex + 2] * weight;
         } else {
-          const fallback = fallbackById.get(contribution.textureId) ?? [91, 70, 56];
-          red += fallback[0] * contribution.weight;
-          green += fallback[1] * contribution.weight;
-          blue += fallback[2] * contribution.weight;
+          const fallback = fallbackById.get(textureId) ?? [91, 70, 56];
+          red += fallback[0] * weight;
+          green += fallback[1] * weight;
+          blue += fallback[2] * weight;
         }
       }
       const outputIndex = (pixelY * canvas.width + pixelX) * 4;
@@ -238,13 +256,26 @@ async function paintTerrainCanvas(
       if (cancelled()) return;
     }
   }
+  if (cancelled()) return;
   context.putImageData(output, 0, 0);
   texture.needsUpdate = true;
+  invalidate();
+}
+
+function materialTexture(url: string, invalidate: () => void): THREE.Texture {
+  const cached = materialTextureCache.get(url);
+  if (cached) return cached;
+  const texture = new THREE.TextureLoader().load(url, invalidate);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestMipmapLinearFilter;
+  materialTextureCache.set(url, texture);
+  return texture;
 }
 
 function fallbackUnit(entity: StateEntity, scale: number): THREE.Group {
   const group = new THREE.Group();
-  const teamColor = entity.team === 2 ? 0x5d91d8 : 0xd56542;
+  const teamColor = entity.team === 0 ? 0x9aa1a5 : entity.team === 2 ? 0x5d91d8 : 0xd56542;
   const item = catalogFor(entity);
   const radius = Math.max(0.3, (item?.footprint ?? 8) * scale * 0.45);
   let geometry: THREE.BufferGeometry;
@@ -262,6 +293,7 @@ async function originalUnit(
   entity: StateEntity,
   manifest: AssetManifest,
   scale: number,
+  invalidate: () => void,
 ): Promise<THREE.Group | undefined> {
   const name = modelNameFor(entity);
   const asset = name ? manifest.models[name] : undefined;
@@ -283,16 +315,12 @@ async function originalUnit(
     const materialName = shape.materials[part.materialIndex];
     const materialAsset = manifest.materials[materialName];
     const material = new THREE.MeshStandardMaterial({
-      color: materialAsset ? 0xffffff : entity.team === 2 ? 0x688fcb : 0xc56b4c,
+      color: materialAsset ? (entity.team === 0 ? 0xb8b8b8 : 0xffffff) : entity.team === 0 ? 0x9ca3a6 : entity.team === 2 ? 0x688fcb : 0xc56b4c,
       roughness: 0.72,
       metalness: 0.2,
     });
     if (materialAsset) {
-      const map = new THREE.TextureLoader().load(materialAsset.url);
-      map.colorSpace = THREE.SRGBColorSpace;
-      map.magFilter = THREE.NearestFilter;
-      map.minFilter = THREE.NearestMipmapLinearFilter;
-      material.map = map;
+      material.map = materialTexture(materialAsset.url, invalidate);
     }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = true;
@@ -327,10 +355,26 @@ export function TerrainViewport({
   const controlsRef = useRef<OrbitControls | null>(null);
   const terrainRootRef = useRef(new THREE.Group());
   const entityRootRef = useRef(new THREE.Group());
+  const terrainMeshRef = useRef<THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | null>(null);
+  const terrainCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const terrainTextureRef = useRef<THREE.CanvasTexture | null>(null);
+  const gridRef = useRef<THREE.Mesh | null>(null);
   const brushRef = useRef<THREE.Mesh | null>(null);
+  const invalidateRef = useRef<(updateShadows?: boolean) => void>(() => undefined);
   const scaleRef = useRef(160 / Math.max(terrain.worldWidth, terrain.worldHeight));
   const propsRef = useRef({ mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onCursor });
+  const entitiesRef = useRef(entities);
+  const terrainRef = useRef(terrain);
   const strokeRef = useRef(false);
+  const entitySceneKey = useMemo(
+    () => entities.map((entity) => `${entity.id}:${entity.token}:${entity.subtype ?? ''}:${entity.team}:${entity.position.join(',')}:${entity.rotation.join(',')}:${entity.active}`).join('|'),
+    [entities],
+  );
+
+  useEffect(() => {
+    entitiesRef.current = entities;
+    terrainRef.current = terrain;
+  }, [entities, terrain]);
 
   useEffect(() => {
     propsRef.current = { mode, terrainTool, selectedPlacementKey, onTerrainStroke, onPlace, onSelectEntity, onCursor };
@@ -345,10 +389,13 @@ export function TerrainViewport({
     const camera = new THREE.PerspectiveCamera(48, 1, 0.05, 500);
     camera.position.set(102, 84, 108);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.domElement.tabIndex = 0;
+    renderer.domElement.setAttribute('aria-label', 'Interactive 3D map viewport. Use W A S D to pan, arrow keys to turn and tilt, Q and E or plus and minus to zoom, and Home to reset the camera.');
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -358,12 +405,14 @@ export function TerrainViewport({
     controls.maxPolarAngle = Math.PI * 0.48;
     controls.minDistance = 12;
     controls.maxDistance = 260;
+    controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
+    controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
 
     scene.add(new THREE.HemisphereLight(0xd9e7ee, 0x382619, 1.7));
     const sun = new THREE.DirectionalLight(0xffd2a1, 2.2);
     sun.position.set(-70, 110, -45);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.left = -110;
     sun.shadow.camera.right = 110;
     sun.shadow.camera.top = 110;
@@ -386,43 +435,149 @@ export function TerrainViewport({
     rendererRef.current = renderer;
     controlsRef.current = controls;
 
+    const pressedCodes = new Set<string>();
+    let interacting = false;
+    let frame = 0;
+    let previousFrameTime = performance.now();
+    const initialPosition = new THREE.Vector3(102, 84, 108);
+    const initialTarget = new THREE.Vector3(0, 0, 0);
+
+    const moveKeyboardCamera = (deltaSeconds: number) => {
+      const input = cameraInputFromCodes(pressedCodes);
+      if (!input.panForward && !input.panRight && !input.yaw && !input.tilt && !input.zoom) return false;
+      const offset = camera.position.clone().sub(controls.target);
+      const distance = Math.max(controls.minDistance, offset.length());
+      if (input.panForward || input.panRight) {
+        const forward = controls.target.clone().sub(camera.position).setY(0);
+        if (forward.lengthSq() < 1e-8) forward.set(0, 0, -1);
+        forward.normalize();
+        const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+        const direction = forward.multiplyScalar(input.panForward).add(right.multiplyScalar(input.panRight));
+        if (direction.lengthSq() > 1) direction.normalize();
+        const movement = direction.multiplyScalar(Math.max(8, distance * 0.72) * deltaSeconds);
+        camera.position.add(movement);
+        controls.target.add(movement);
+      }
+      if (input.yaw) offset.applyAxisAngle(camera.up, -input.yaw * 1.25 * deltaSeconds);
+      if (input.tilt) {
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+        spherical.phi = THREE.MathUtils.clamp(
+          spherical.phi - input.tilt * 0.95 * deltaSeconds,
+          0.12,
+          controls.maxPolarAngle,
+        );
+        offset.setFromSpherical(spherical);
+      }
+      if (input.zoom) {
+        const nextDistance = THREE.MathUtils.clamp(
+          offset.length() * Math.exp(-input.zoom * 1.5 * deltaSeconds),
+          controls.minDistance,
+          controls.maxDistance,
+        );
+        offset.setLength(nextDistance);
+      }
+      camera.position.copy(controls.target).add(offset);
+      return true;
+    };
+
+    const renderFrame = (time: number) => {
+      frame = 0;
+      const deltaSeconds = Math.min(0.05, Math.max(0.001, (time - previousFrameTime) / 1000));
+      previousFrameTime = time;
+      const keyboardMoved = moveKeyboardCamera(deltaSeconds);
+      const controlsMoved = controls.update();
+      renderer.render(scene, camera);
+      if (keyboardMoved || pressedCodes.size > 0 || interacting || controlsMoved) requestRender();
+    };
+    const requestRender = (updateShadows = false) => {
+      if (updateShadows) renderer.shadowMap.needsUpdate = true;
+      if (!frame) {
+        previousFrameTime = performance.now();
+        frame = requestAnimationFrame(renderFrame);
+      }
+    };
+    invalidateRef.current = requestRender;
+
+    const controlsChanged = () => requestRender();
+    const controlsStarted = () => { interacting = true; requestRender(); };
+    const controlsEnded = () => { interacting = false; requestRender(); };
+    controls.addEventListener('change', controlsChanged);
+    controls.addEventListener('start', controlsStarted);
+    controls.addEventListener('end', controlsEnded);
+
+    const keyboardEnabled = () => document.activeElement === renderer.domElement || renderer.domElement.matches(':hover');
+    const editingText = (target: EventTarget | null) => target instanceof HTMLElement && target.matches('input, textarea, select, [contenteditable="true"]');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (editingText(event.target) || event.ctrlKey || event.metaKey || event.altKey || !keyboardEnabled()) return;
+      if (event.code === 'Home') {
+        event.preventDefault();
+        camera.position.copy(initialPosition);
+        controls.target.copy(initialTarget);
+        controls.update();
+        requestRender();
+        return;
+      }
+      if (!isCameraControlCode(event.code)) return;
+      event.preventDefault();
+      pressedCodes.add(event.code);
+      requestRender();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!pressedCodes.delete(event.code)) return;
+      event.preventDefault();
+      requestRender();
+    };
+    const clearPressedCodes = () => pressedCodes.clear();
+    const focusViewport = () => renderer.domElement.focus({ preventScroll: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', clearPressedCodes);
+    renderer.domElement.addEventListener('pointerdown', focusViewport);
+
     const resize = () => {
       const width = Math.max(1, container.clientWidth);
       const height = Math.max(1, container.clientHeight);
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      requestRender();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
     resize();
-
-    let frame = 0;
-    const animate = () => {
-      controls.update();
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(animate);
-    };
-    animate();
+    requestRender(true);
 
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      controls.removeEventListener('change', controlsChanged);
+      controls.removeEventListener('start', controlsStarted);
+      controls.removeEventListener('end', controlsEnded);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', clearPressedCodes);
+      renderer.domElement.removeEventListener('pointerdown', focusViewport);
       controls.dispose();
       renderer.dispose();
       brush.geometry.dispose();
       (brush.material as THREE.Material).dispose();
       renderer.domElement.remove();
+      invalidateRef.current = () => undefined;
       sceneRef.current = null;
+      cameraRef.current = null;
+      rendererRef.current = null;
+      controlsRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const root = terrainRootRef.current;
+    const currentTerrain = terrainRef.current;
+    terrainTextureRef.current?.dispose();
     disposeTree(root);
-    const scale = 160 / Math.max(terrain.worldWidth, terrain.worldHeight);
+    const scale = 160 / Math.max(currentTerrain.worldWidth, currentTerrain.worldHeight);
     scaleRef.current = scale;
-    const geometry = terrainGeometry(terrain, scale);
+    const geometry = terrainGeometry(currentTerrain, scale);
     const canvas = document.createElement('canvas');
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -435,28 +590,86 @@ export function TerrainViewport({
     mesh.receiveShadow = true;
     mesh.userData.terrain = true;
     root.add(mesh);
-    if (showGrid) {
-      const wire = new THREE.Mesh(
-        geometry.clone(),
-        new THREE.MeshBasicMaterial({ color: 0xffd0a0, wireframe: true, transparent: true, opacity: 0.075, depthWrite: false }),
-      );
-      wire.position.y = 0.012;
-      root.add(wire);
-    }
-    let disposed = false;
-    void paintTerrainCanvas(canvas, terrain, manifest, texture, textureBlend, () => disposed);
+    terrainMeshRef.current = mesh;
+    terrainCanvasRef.current = canvas;
+    terrainTextureRef.current = texture;
+    invalidateRef.current(true);
     return () => {
-      disposed = true;
+      if (terrainMeshRef.current === mesh) {
+        terrainMeshRef.current = null;
+        terrainCanvasRef.current = null;
+        terrainTextureRef.current = null;
+      }
       texture.dispose();
+      disposeTree(root);
     };
-  }, [terrain, manifest, showGrid, textureBlend]);
+  }, [terrain.height, terrain.width, terrain.worldHeight, terrain.worldWidth]);
+
+  useEffect(() => {
+    const mesh = terrainMeshRef.current;
+    if (!mesh) return;
+    updateTerrainHeights(mesh.geometry, terrainRef.current, scaleRef.current);
+    invalidateRef.current(!strokeRef.current);
+  }, [terrain.height, terrain.heights, terrain.width, terrain.worldHeight, terrain.worldWidth]);
+
+  useEffect(() => {
+    const root = terrainRootRef.current;
+    const previous = gridRef.current;
+    if (previous) {
+      root.remove(previous);
+      (previous.material as THREE.Material).dispose();
+      gridRef.current = null;
+    }
+    const mesh = terrainMeshRef.current;
+    if (!showGrid || !mesh) {
+      invalidateRef.current();
+      return;
+    }
+    const wire = new THREE.Mesh(
+      mesh.geometry,
+      new THREE.MeshBasicMaterial({ color: 0xffd0a0, wireframe: true, transparent: true, opacity: 0.075, depthWrite: false }),
+    );
+    wire.position.y = 0.012;
+    wire.raycast = () => undefined;
+    root.add(wire);
+    gridRef.current = wire;
+    invalidateRef.current();
+    return () => {
+      if (gridRef.current === wire) gridRef.current = null;
+      root.remove(wire);
+      (wire.material as THREE.Material).dispose();
+    };
+  }, [showGrid, terrain.height, terrain.width, terrain.worldHeight, terrain.worldWidth]);
+
+  useEffect(() => {
+    const canvas = terrainCanvasRef.current;
+    const texture = terrainTextureRef.current;
+    if (!canvas || !texture) return;
+    const currentTerrain = terrainRef.current;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void paintTerrainCanvas(
+        canvas,
+        currentTerrain,
+        manifest,
+        texture,
+        textureBlend,
+        () => cancelled,
+        () => invalidateRef.current(),
+      );
+    }, 42);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [manifest, terrain.height, terrain.tagmap2, terrain.textureIds, terrain.width, textureBlend]);
 
   useEffect(() => {
     const root = entityRootRef.current;
     disposeTree(root);
     let cancelled = false;
     const scale = scaleRef.current;
-    for (const entity of entities.filter((item) => item.token !== '*')) {
+    for (const entity of entitiesRef.current.filter((item) => item.token !== '*')) {
       const holder = new THREE.Group();
       holder.userData.entityId = entity.id;
       holder.position.set(
@@ -464,18 +677,26 @@ export function TerrainViewport({
         entity.position[2] * scale,
         (entity.position[1] - terrain.worldHeight / 2) * scale,
       );
-      holder.rotation.y = -entity.rotation[2];
       root.add(holder);
+      const modelHolder = new THREE.Group();
+      modelHolder.userData.entityId = entity.id;
+      modelHolder.rotation.set(-entity.rotation[0], -entity.rotation[2], -entity.rotation[1], 'YXZ');
+      holder.add(modelHolder);
       const placeholder = fallbackUnit(entity, scale);
       placeholder.userData.entityId = entity.id;
-      holder.add(placeholder);
-      void originalUnit(entity, manifest, scale).then((model) => {
-        if (!model || cancelled || !holder.parent) return;
+      modelHolder.add(placeholder);
+      void originalUnit(entity, manifest, scale, () => invalidateRef.current()).then((model) => {
+        if (!model) return;
+        if (cancelled || !modelHolder.parent) {
+          disposeTree(model);
+          return;
+        }
         disposeTree(placeholder);
-        holder.remove(placeholder);
+        modelHolder.remove(placeholder);
         model.userData.entityId = entity.id;
         model.traverse((part) => { part.userData.entityId = entity.id; });
-        holder.add(model);
+        modelHolder.add(model);
+        invalidateRef.current(true);
       }).catch(() => undefined);
 
       if (entity.id === selectedEntityId) {
@@ -484,6 +705,7 @@ export function TerrainViewport({
           new THREE.RingGeometry(footprint * scale * 0.9, footprint * scale, 48),
           new THREE.MeshBasicMaterial({ color: 0xffb169, side: THREE.DoubleSide, transparent: true, opacity: 0.95, depthTest: false }),
         );
+        ring.raycast = () => undefined;
         ring.rotation.x = -Math.PI / 2;
         ring.position.y = -entity.position[2] * scale + 0.025;
         ring.renderOrder = 30;
@@ -491,10 +713,12 @@ export function TerrainViewport({
       }
       if (entity.token === 'e' && (entity.id === selectedEntityId || mode === 'base')) {
         const radius = serviceRadius * scale;
+        const rangeColor = entity.team === 0 ? 0xaeb5b9 : entity.team === 2 ? 0x65a6ff : 0xff7659;
         const range = new THREE.Mesh(
           new THREE.RingGeometry(Math.max(0, radius - 0.08), radius, 96),
-          new THREE.MeshBasicMaterial({ color: entity.team === 2 ? 0x65a6ff : 0xff7659, transparent: true, opacity: entity.id === selectedEntityId ? 0.45 : 0.16, side: THREE.DoubleSide, depthWrite: false }),
+          new THREE.MeshBasicMaterial({ color: rangeColor, transparent: true, opacity: entity.id === selectedEntityId ? 0.45 : 0.16, side: THREE.DoubleSide, depthWrite: false }),
         );
+        range.raycast = () => undefined;
         range.rotation.x = -Math.PI / 2;
         range.position.y = -entity.position[2] * scale + 0.018;
         holder.add(range);
@@ -503,19 +727,22 @@ export function TerrainViewport({
           new THREE.RingGeometry(Math.max(0, backup - 0.06), backup, 64),
           new THREE.MeshBasicMaterial({ color: 0xf6c16f, transparent: true, opacity: entity.id === selectedEntityId ? 0.7 : 0.22, side: THREE.DoubleSide, depthWrite: false }),
         );
+        backupRange.raycast = () => undefined;
         backupRange.rotation.x = -Math.PI / 2;
         backupRange.position.y = -entity.position[2] * scale + 0.022;
         holder.add(backupRange);
       }
     }
+    invalidateRef.current(true);
     return () => { cancelled = true; };
-  }, [backupRadius, entities, manifest, mode, selectedEntityId, serviceRadius, terrain.worldHeight, terrain.worldWidth]);
+  }, [backupRadius, entitySceneKey, manifest, mode, selectedEntityId, serviceRadius, terrain.worldHeight, terrain.worldWidth]);
 
   useEffect(() => {
     const brush = brushRef.current;
     if (!brush) return;
     const diameter = brushRadius * scaleRef.current;
     brush.scale.set(diameter, diameter, diameter);
+    invalidateRef.current();
   }, [brushRadius]);
 
   useEffect(() => {
@@ -527,11 +754,14 @@ export function TerrainViewport({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
 
-    const hit = (event: PointerEvent) => {
+    const hit = (clientX: number, clientY: number, includeEntities = false) => {
       const rect = renderer.domElement.getBoundingClientRect();
-      pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      pointer.set((clientX - rect.left) / rect.width * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(pointer, camera);
-      return raycaster.intersectObjects([entityRootRef.current, terrainRootRef.current], true);
+      const terrainMesh = terrainMeshRef.current;
+      const targets: THREE.Object3D[] = includeEntities ? [entityRootRef.current] : [];
+      if (terrainMesh) targets.push(terrainMesh);
+      return raycaster.intersectObjects(targets, true);
     };
     const terrainPoint = (intersections: THREE.Intersection[]) => intersections.find((result) => {
       let object: THREE.Object3D | null = result.object;
@@ -557,6 +787,21 @@ export function TerrainViewport({
         point.y / scale,
       ];
     };
+    let lastCursorUpdate = 0;
+    let cursorVisible = false;
+    const publishCursor = (point?: [number, number, number]) => {
+      if (!point) {
+        if (cursorVisible) propsRef.current.onCursor(undefined);
+        cursorVisible = false;
+        return;
+      }
+      const now = performance.now();
+      if (!cursorVisible || now - lastCursorUpdate >= 75) {
+        propsRef.current.onCursor(point);
+        lastCursorUpdate = now;
+      }
+      cursorVisible = true;
+    };
     const moveBrush = (result?: THREE.Intersection) => {
       const brush = brushRef.current;
       if (!brush) return;
@@ -564,11 +809,16 @@ export function TerrainViewport({
       if (result) {
         brush.position.copy(result.point);
         brush.position.y += 0.08;
-        propsRef.current.onCursor(toWorld(result.point));
-      } else propsRef.current.onCursor(undefined);
+        publishCursor(toWorld(result.point));
+      } else publishCursor(undefined);
+      invalidateRef.current();
     };
-    const onPointerMove = (event: PointerEvent) => {
-      const intersections = hit(event);
+    let pointerFrame = 0;
+    let latestPointer: { clientX: number; clientY: number } | undefined;
+    const processPointerMove = () => {
+      pointerFrame = 0;
+      if (!latestPointer) return;
+      const intersections = hit(latestPointer.clientX, latestPointer.clientY);
       const ground = terrainPoint(intersections);
       moveBrush(ground);
       if (strokeRef.current && ground) {
@@ -576,9 +826,22 @@ export function TerrainViewport({
         propsRef.current.onTerrainStroke(x, y, 'move');
       }
     };
+    const flushPointerMove = () => {
+      if (pointerFrame) cancelAnimationFrame(pointerFrame);
+      pointerFrame = 0;
+      processPointerMove();
+      latestPointer = undefined;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if ((event.buttons & 2) !== 0) return;
+      latestPointer = { clientX: event.clientX, clientY: event.clientY };
+      if (!pointerFrame) pointerFrame = requestAnimationFrame(processPointerMove);
+    };
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      const intersections = hit(event);
+      event.stopImmediatePropagation();
+      renderer.domElement.focus({ preventScroll: true });
+      const intersections = hit(event.clientX, event.clientY, propsRef.current.mode === 'base');
       const unitHit = intersections.find((result) => entityId(result.object));
       if (propsRef.current.mode === 'base' && unitHit) {
         propsRef.current.onSelectEntity(entityId(unitHit.object));
@@ -599,27 +862,33 @@ export function TerrainViewport({
     };
     const endStroke = (event: PointerEvent) => {
       if (!strokeRef.current) return;
+      flushPointerMove();
       strokeRef.current = false;
       controls.enabled = true;
       if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
       propsRef.current.onTerrainStroke(0, 0, 'end');
+      invalidateRef.current(true);
     };
     const onLeave = () => {
       if (brushRef.current) brushRef.current.visible = false;
-      propsRef.current.onCursor(undefined);
+      publishCursor(undefined);
+      invalidateRef.current();
     };
+    const onContextMenu = (event: MouseEvent) => event.preventDefault();
     renderer.domElement.addEventListener('pointermove', onPointerMove);
-    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
     renderer.domElement.addEventListener('pointerup', endStroke);
     renderer.domElement.addEventListener('pointercancel', endStroke);
     renderer.domElement.addEventListener('pointerleave', onLeave);
-    renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
+    renderer.domElement.addEventListener('contextmenu', onContextMenu);
     return () => {
+      if (pointerFrame) cancelAnimationFrame(pointerFrame);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
-      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown, true);
       renderer.domElement.removeEventListener('pointerup', endStroke);
       renderer.domElement.removeEventListener('pointercancel', endStroke);
       renderer.domElement.removeEventListener('pointerleave', onLeave);
+      renderer.domElement.removeEventListener('contextmenu', onContextMenu);
     };
   }, [terrain.worldHeight, terrain.worldWidth]);
 
@@ -629,7 +898,10 @@ export function TerrainViewport({
         <span>3D PERSPECTIVE</span>
         <span>ORIGINAL TEXTURES</span>
       </div>
-      <div className="viewport-help">Left drag edits · Right drag orbits · Wheel zooms</div>
+      <div className="viewport-help">
+        <span>Mouse · Left edit/place · Right orbit · Wheel zoom</span>
+        <span>Keys · WASD pan · Arrows turn/tilt · Q/E or +/− zoom · Home reset</span>
+      </div>
     </div>
   );
 }

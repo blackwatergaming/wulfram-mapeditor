@@ -10,7 +10,7 @@
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
-    "test": "node --experimental-strip-types --test tests/base-template.test.mjs tests/og-map-roundtrip.test.mjs tests/terrain-blend.test.mjs",
+    "test": "node --experimental-strip-types --test tests/base-template.test.mjs tests/camera-controls.test.mjs tests/og-map-roundtrip.test.mjs tests/terrain-blend.test.mjs",
     "test:og-maps": "node --experimental-strip-types --test tests/og-map-roundtrip.test.mjs",
     "verify:formats": "node --experimental-strip-types tools/verify-formats.mjs",
     "format": "oxfmt"

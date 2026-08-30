@@ -5,11 +5,16 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  CATALOG,
+  catalogFor,
+  catalogItemHasModel,
   createBlankProject,
   instantiateBaseTemplate,
   parseLand,
   parseState,
   sampleHeight,
+  snapStructureToTerrain,
+  usesFootprintTerrainSnap,
 } from '../lib/wulfram.ts';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,17 +119,63 @@ void test('template placement rotates, auto-fits, clamps, remaps, and terrain-co
     return x * 7 + y * 11;
   });
 
-  const placement = instantiateBaseTemplate(template, terrain, [-500, 900], 2, 1.5, Math.PI / 2);
-  assert.equal(placement.entities.length, template.units.length);
+  const modeledUnits = template.units.filter((unit) => {
+    const item = CATALOG.find((candidate) => candidate.token === unit.token && (unit.token !== 'c' || candidate.subtype === unit.subtype));
+    return item ? catalogItemHasModel(item, 2, manifest) : false;
+  });
+  const placement = instantiateBaseTemplate(template, terrain, [-500, 900], 2, 1.5, Math.PI / 2, manifest);
+  assert.equal(placement.entities.length, modeledUnits.length);
   assert.ok(placement.scale < 1.5, 'Oversized formation should auto-fit the destination terrain.');
   for (let index = 0; index < placement.entities.length; index += 1) {
     const entity = placement.entities[index];
-    const source = template.units[index];
+    const source = modeledUnits[index];
     assert.equal(entity.team, 2, `unit ${index}: team remap`);
     assert.ok(entity.position[0] >= 10 - 1e-9 && entity.position[0] <= terrain.worldWidth - 10 + 1e-9, `unit ${index}: X bounds`);
     assert.ok(entity.position[1] >= 10 - 1e-9 && entity.position[1] <= terrain.worldHeight - 10 + 1e-9, `unit ${index}: Y bounds`);
-    close(entity.position[2], sampleHeight(terrain, entity.position[0], entity.position[1]) + source.groundOffset, 1e-9, `unit ${index}: terrain-conformed Z`);
+    if (usesFootprintTerrainSnap(entity.token)) {
+      const expected = snapStructureToTerrain(
+        terrain,
+        entity.position[0],
+        entity.position[1],
+        (catalogFor(entity)?.footprint ?? 10) * placement.scale,
+        entity.rotation[2],
+        source.groundOffset,
+      );
+      close(entity.position[2], expected.height, 1e-9, `unit ${index}: footprint-conformed Z`);
+      close(entity.rotation[0], expected.pitch, 1e-12, `unit ${index}: slope pitch`);
+      close(entity.rotation[1], expected.roll, 1e-12, `unit ${index}: slope roll`);
+    } else {
+      close(entity.position[2], sampleHeight(terrain, entity.position[0], entity.position[1]) + source.groundOffset, 1e-9, `unit ${index}: terrain-conformed Z`);
+    }
     assert.ok(entity.rotation[2] >= 0 && entity.rotation[2] < Math.PI * 2, `unit ${index}: normalized yaw`);
     close(circularDistance(entity.rotation[2], source.rotation[2] + Math.PI / 2), 0, 1e-12, `unit ${index}: formation yaw`);
   }
+});
+
+void test('footprint snapping clears a sloped surface with an explicit safety margin', () => {
+  const terrain = createBlankProject('Slope snap', 9).terrain;
+  terrain.worldWidth = 80;
+  terrain.worldHeight = 80;
+  terrain.heights = Array.from({ length: 81 }, (_, index) => {
+    const x = index % 9;
+    const y = Math.floor(index / 9);
+    return x * 3 + y * 5 + (x === 5 && y === 5 ? 7 : 0);
+  });
+  const result = snapStructureToTerrain(terrain, 40, 40, 24, Math.PI / 3, 3.8, 0.75);
+  assert.ok(Number.isFinite(result.height) && Number.isFinite(result.pitch) && Number.isFinite(result.roll));
+  assert.ok(result.safetyLift >= 0.75, 'The snap must retain its anti-clipping margin.');
+  assert.notEqual(result.pitch, 0);
+  assert.notEqual(result.roll, 0);
+});
+
+void test('build placement omits removed types while retaining neutral modeled units', () => {
+  const unsupported = CATALOG.filter((item) => !catalogItemHasModel(item, 1, manifest));
+  assert.deepEqual(unsupported.map((item) => item.key), ['shield', 'silo', 'portal', 'bug']);
+  const template = library.templates.find((candidate) => candidate.units.some((unit) => unit.token === 'h'));
+  assert.ok(template, 'Expected a discovered base containing a removed supply-ship type.');
+  const terrain = createBlankProject('Modeled units only', 17).terrain;
+  const placement = instantiateBaseTemplate(template, terrain, [terrain.worldWidth / 2, terrain.worldHeight / 2], 0, 1, 0, manifest);
+  assert.ok(placement.skippedWithoutModel > 0);
+  assert.ok(placement.entities.every((entity) => entity.team === 0));
+  assert.ok(placement.entities.every((entity) => entity.token !== 'h'));
 });

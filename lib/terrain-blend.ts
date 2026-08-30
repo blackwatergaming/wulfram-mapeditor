@@ -23,38 +23,68 @@ export function textureBlendContributions(
   softness: number,
   usesAntiDiagonal = false,
 ): TextureBlendContribution[] {
-  const x = Math.max(0, Math.min(1, xFraction));
-  const y = Math.max(0, Math.min(1, yFraction));
-  let weights: [number, number, number, number];
-  if (usesAntiDiagonal) {
-    weights = x + y <= 1
-      ? [1 - x - y, x, y, 0]
-      : [0, 1 - y, 1 - x, x + y - 1];
-  } else {
-    weights = x <= y
-      ? [1 - y, 0, y - x, x]
-      : [1 - x, x - y, 0, y];
-  }
-  const blend = Math.max(0, Math.min(1, softness));
-  if (blend <= 0.001) {
-    const winner = weights.indexOf(Math.max(...weights));
-    weights = weights.map((_, index) => index === winner ? 1 : 0) as [number, number, number, number];
-  } else {
-    const exponent = 1 + (1 - blend) * 8;
-    weights = weights.map((weight) => Math.pow(Math.max(0, weight), exponent)) as [number, number, number, number];
-  }
+  const weights = textureBlendWeights(xFraction, yFraction, softness, usesAntiDiagonal);
   const combined = new Map<number, number>();
   for (let index = 0; index < textureIds.length; index += 1) {
     combined.set(textureIds[index], (combined.get(textureIds[index]) ?? 0) + weights[index]);
   }
-  const contributions = [...combined.entries()]
-    .filter(([, weight]) => weight > 1e-8)
+  return [...combined.entries()]
+    .filter(([, weight]) => weight > 0)
     .map(([textureId, weight]) => ({ textureId, weight }));
-  const total = contributions.reduce((sum, contribution) => sum + contribution.weight, 0);
-  return contributions.map((contribution) => ({
-    textureId: contribution.textureId,
-    weight: contribution.weight / total,
-  }));
+}
+
+export function textureBlendWeights(
+  xFraction: number,
+  yFraction: number,
+  softness: number,
+  usesAntiDiagonal = false,
+  output: [number, number, number, number] = [0, 0, 0, 0],
+): [number, number, number, number] {
+  const x = Math.max(0, Math.min(1, xFraction));
+  const y = Math.max(0, Math.min(1, yFraction));
+  if (usesAntiDiagonal) {
+    if (x + y <= 1) {
+      output[0] = 1 - x - y;
+      output[1] = x;
+      output[2] = y;
+      output[3] = 0;
+    } else {
+      output[0] = 0;
+      output[1] = 1 - y;
+      output[2] = 1 - x;
+      output[3] = x + y - 1;
+    }
+  } else if (x <= y) {
+    output[0] = 1 - y;
+    output[1] = 0;
+    output[2] = y - x;
+    output[3] = x;
+  } else {
+    output[0] = 1 - x;
+    output[1] = x - y;
+    output[2] = 0;
+    output[3] = y;
+  }
+  const blend = Math.max(0, Math.min(1, softness));
+  if (blend <= 0.001) {
+    let winner = 0;
+    for (let index = 1; index < output.length; index += 1) {
+      if (output[index] > output[winner]) winner = index;
+    }
+    for (let index = 0; index < output.length; index += 1) output[index] = index === winner ? 1 : 0;
+  } else {
+    const exponent = 1 + (1 - blend) * 8;
+    for (let index = 0; index < output.length; index += 1) {
+      output[index] = Math.pow(Math.max(0, output[index]), exponent);
+    }
+  }
+  let total = 0;
+  for (let index = 0; index < output.length; index += 1) {
+    if (output[index] <= 1e-8) output[index] = 0;
+    total += output[index];
+  }
+  for (let index = 0; index < output.length; index += 1) output[index] /= total;
+  return output;
 }
 
 export function shouldPaintTextureVertex(

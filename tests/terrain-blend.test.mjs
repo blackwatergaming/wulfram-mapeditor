@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { shouldPaintTextureVertex, textureBlendAxis, textureBlendContributions } from '../lib/terrain-blend.ts';
+import { shouldPaintTextureVertex, textureBlendAxis, textureBlendContributions, textureBlendWeights } from '../lib/terrain-blend.ts';
 
 void test('texture blend axis supports hard edges and smooth transition widths', () => {
   assert.equal(textureBlendAxis(0.49, 0), 0);
@@ -40,6 +40,16 @@ void test('hard mode chooses one vertex while full blend follows each checkerboa
     { textureId: 2, weight: 0.5 },
     { textureId: 3, weight: 0.5 },
   ]);
+});
+
+void test('reusable blend weights preserve contribution math without per-pixel allocation', () => {
+  const output = [0, 0, 0, 0];
+  const first = textureBlendWeights(0.31, 0.78, 0.72, false, output);
+  assert.equal(first, output, 'The caller-provided buffer should be reused.');
+  const ids = [4, 9, 4, 12];
+  const expected = new Map();
+  for (let index = 0; index < ids.length; index += 1) expected.set(ids[index], (expected.get(ids[index]) ?? 0) + output[index]);
+  assert.deepEqual(textureBlendContributions(ids, 0.31, 0.78, 0.72), [...expected].filter(([, weight]) => weight > 0).map(([textureId, weight]) => ({ textureId, weight })));
 });
 
 void test('texture paint feathering is stable and increases coverage with brush strength', () => {

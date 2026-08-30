@@ -444,6 +444,12 @@ def analyze_maps() -> dict:
     record_count = 0
     analyzed_files = 0
     powered_tokens = {"f", "r", "s", "g", "E", "L", "o"}
+    footprint_snap_labels = {
+        "e": "Power Cell",
+        "r": "Repair Pad",
+        "L": "Missile Launcher",
+        "p": "Skypump",
+    }
 
     for state_path in state_paths:
         land_path = state_path.parent / "land"
@@ -463,6 +469,7 @@ def analyze_maps() -> dict:
                 continue
             if token in {"g", "s"}:
                 rotations[token].append([normalize_angle(value) for value in record["rotation"]])
+            if token in footprint_snap_labels or token in {"g", "s"}:
                 ground = sample_terrain_height(land, record["position"][0], record["position"][1])
                 offset = record["position"][2] - ground
                 if abs(offset) < 80:
@@ -507,6 +514,17 @@ def analyze_maps() -> dict:
             else 0,
         }
 
+    placement_defaults = {
+        token: {
+            "name": label,
+            "sampleCount": len(offsets[token]),
+            "heightOffset": round(statistics.median(offsets[token]), 3) if offsets[token] else 0,
+            "snapMargin": 0.75,
+            "method": "3x3 footprint plane, highest residual clearance, then safety margin",
+        }
+        for token, label in footprint_snap_labels.items()
+    }
+
     # The client receives the true radii in the BEHAVIOR packet; static maps do
     # not contain them. Old states also include intentionally unpowered or stale
     # structures, so use the dense placement cluster instead of the global p95.
@@ -527,6 +545,7 @@ def analyze_maps() -> dict:
         "cargoTokens": CARGO_NAMES,
         "tokenCounts": dict(sorted(token_counts.items())),
         "turretDefaults": turret_defaults,
+        "placementDefaults": placement_defaults,
         "powerCell": {
             "serviceRadius": service_radius,
             "backupRadius": backup_radius,

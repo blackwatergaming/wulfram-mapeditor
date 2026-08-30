@@ -6,9 +6,13 @@ Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II ma
 
 - Full map lifecycle: new map, import, edit, validate, local save/autosave, undo/redo, and ZIP export.
 - Terrain mode with raise, lower, level, smooth, and original-texture paint brushes. Painting uses stable edge feathering, while the viewport performs normalized multi-texture blending with an adjustable transition width and strict nearest-neighbor texel sampling.
+- Event-driven 3D rendering with static shadow reuse, frame-coalesced pointer sampling, allocation-free blend weights, and independent terrain/texture/unit update paths.
+- Full keyboard camera control: `WASD` pans, arrow keys turn and tilt, `Q`/`E` or `+`/`-` zoom, and `Home` resets the view. Right-drag orbits and the mouse wheel zooms.
 - Grayscale image import, resampled into the active terrain grid with configurable black/white heights.
 - Base Builder mode with team placement, original models where shipped, rotation/position editing, cargo subtypes, and uplinks.
-- A 73-template shipped-base library extracted from powered formations across 19 maps. Whole bases can be team-remapped, rotated, footprint-scaled, auto-fit inside map bounds, and terrain-conformed unit by unit.
+- A 73-template shipped-base library extracted from powered formations across 19 maps, with a live 2D top-down layout preview. Whole bases can be remapped to Team 1, Team 2, or capturable Neutral, rotated, footprint-scaled, auto-fit inside map bounds, and terrain-conformed unit by unit.
+- Repair pads, power cells, missile launchers, and skypumps fit a 3 × 3 plane across their whole footprint, inherit slope pitch/roll, then lift to the highest contact plus a 0.75-unit margin to prevent clipping.
+- The build catalog and template placer are asset-authoritative: removed unit types without a shipped model cannot be newly placed, while legacy map rows remain importable for lossless editing.
 - Placement validation for bounds, slope, spacing, ground height, power coverage, primary-cell overlap, and backup-cell areas.
 - Original `land`, `state`, `tagmap`, and `tagmap2` import/export.
 - `wulfram-base-layout` JSON v1 import/export, included in every map ZIP with an editor project backup.
