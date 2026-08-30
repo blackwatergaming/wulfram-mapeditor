@@ -2,7 +2,7 @@
 
 Updated: 2026-08-30
 
-## In progress — multiple base-layout states
+## Completed — multiple base-layout states and 3D transforms
 
 - [x] Define separate terrain and base-state persistence boundaries while retaining legacy `entities.jsonl` loading.
 - [x] Add a versioned `base-layouts.json` collection with multiple named layouts and user `key=value` metadata.
@@ -12,7 +12,7 @@ Updated: 2026-08-30
 - [x] Add Ctrl-held XYZ translation and pitch/roll/yaw 3D transform handles for selected placed models.
 - [x] Extend original-map, package, repository, native bridge, and loopback-service regression coverage.
 - [x] Complete headed desktop verification and build the self-contained v0.5.0 archive.
-- [ ] Commit to `main` and publish/verify the v0.5.0 release.
+- [x] Commit to `main` and publish/verify the v0.5.0 release.
 
 ## Completed
 
@@ -94,6 +94,7 @@ Updated: 2026-08-30
 - Selected models expose standard Three.js transform controls only while Ctrl is held: world-space XYZ movement or local pitch/roll/yaw rotation, committed as one undoable edit per drag.
 - The packaged v0.5.0 headed probe at DPR 2 created and annotated a second base layout, attached both transform modes, performed a real yaw-ring drag from 0° to 36.55°, decoded an original texture pixel, showed no document overflow or runtime/network errors, and held 60 FPS during camera motion.
 - The local v0.5.0 self-contained archive is 66,759,485 bytes with SHA-256 `03806391e24fd2d41ece9eb33b3fc73ca15454659440ba7b7d841ca7cf23e625`.
+- GitHub release v0.5.0 passed install, lint, all 38 tests, and the self-contained desktop build. Its published Windows archive is 66,756,668 bytes with SHA-256 `7bcff05d3404893603e314b0e5aa4d6e4e3e5538957d95b7766d2611f58081f6`, alongside `SHA256SUMS.txt`.
 - `blackwatergaming/wulfram-maps` now contains 47 canonical map directories on `main`; release v0.1.0 contains 47 map packages, one collection archive, and `SHA256SUMS.txt`.
 - The loopback service returned all 47 maps and loaded Crossroads with 16,641 terrain vertices and 69 entities; the editor route returned HTTP 200.
 - A headed Edge WebView2 run at Windows 200% scaling reported a 1280×730 CSS viewport at DPR 2 with no document overflow. Idle, nine-model template-preview, and active keyboard-camera timing held 59–60 FPS.
