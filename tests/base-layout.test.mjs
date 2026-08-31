@@ -6,6 +6,7 @@ import {
   cloneProject,
   createBlankProject,
   synchronizeActiveBaseLayout,
+  validateProject,
 } from '../lib/wulfram.ts';
 
 const unit = (id, x) => ({
@@ -53,4 +54,41 @@ void test('switching layouts saves the outgoing state and restores the incoming 
   activateBaseLayout(project, 'night');
   assert.equal(project.entities[0].position[0], 325);
   assert.deepEqual(project.baseLayouts[1].metadata, { lighting: 'night' });
+});
+
+const stateUnit = (id, token, team, x, y) => ({
+  id,
+  token,
+  team,
+  position: [x, y, 4],
+  rotation: [0, 0, 0],
+  active: 1,
+});
+
+const stateRequirements = (project) => validateProject(project).filter((issue) => issue.code.startsWith('state-'));
+
+void test('state validation requires an uplink and a powered repair pad for both teams', () => {
+  const project = createBlankProject('Required team infrastructure');
+
+  assert.deepEqual(stateRequirements(project).map((issue) => issue.message), [
+    'Team 1 must have an uplink.',
+    'Team 1 must have at least one powered repair pad.',
+    'Team 2 must have an uplink.',
+    'Team 2 must have at least one powered repair pad.',
+  ]);
+
+  project.entities = [
+    stateUnit('team-1-cell', 'e', 1, 200, 200),
+    stateUnit('team-1-repair', 'r', 1, 600, 200),
+    stateUnit('team-1-uplink', 'u', 1, 200, 400),
+    stateUnit('team-2-cell', 'e', 2, 1200, 200),
+    stateUnit('team-2-repair', 'r', 2, 1300, 200),
+    stateUnit('team-2-uplink', 'u', 2, 1200, 400),
+  ];
+
+  assert.deepEqual(stateRequirements(project).map((issue) => issue.message), [
+    'Team 1 must have at least one powered repair pad.',
+  ]);
+  project.entities.find((entity) => entity.id === 'team-1-repair').position[0] = 300;
+  assert.deepEqual(stateRequirements(project), []);
 });

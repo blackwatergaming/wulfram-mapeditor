@@ -46,7 +46,7 @@ Updated: 2026-08-30
 - [x] Add live terrain-conformed original-model ghosts for single-unit and whole-template placement.
 - [x] Remove the artificial camera close-zoom distance floor.
 - [x] Remove the ChatGPT Sites hosting manifest/plugin so builds and publication remain local or GitHub-based.
-- [x] Replace catalog-only snapping with extracted model-bounds clearance for every surviving placeable model, sample terrain-grid peaks, and retain a 1.25-unit underside margin.
+- [x] Replace catalog-only snapping with extracted model-bounds clearance for every surviving placeable model, sample terrain-grid peaks, and retain a 0.25-unit underside margin.
 - [x] Add a maps-service setup/diagnostics wizard plus `maps:doctor` for checkout, Git, GitHub CLI/authentication, origin, `main`, branch, and worktree checks.
 - [x] Add branch creation/switching and make Publish create or reuse feature-branch commits and pull requests targeting `main`.
 - [x] Add Shift-drag pickup for selected units with live terrain-conformed position/tilt preview and a single undoable commit on release.
@@ -54,6 +54,12 @@ Updated: 2026-08-30
 - [x] Add `BUILD.md` with browser, self-contained desktop, research/debug, headed measurement, map PR, and release procedures.
 - [x] Make Escape clear active unit/template placement and its cursor preview without discarding the selected placed unit.
 - [x] Remove cargo variants for model-less deployables from new placement and templates while retaining legacy-row import/export.
+- [x] Restore state-tagged supply-starship models and the original neutral/red/blue per-face material remapping with repeating shape UVs.
+- [x] Lock placed starships to their absolute Z and authored pitch/roll/yaw while retaining X/Y movement.
+- [x] Scan every shipped map state and force new starship previews, direct placements, and template placements to the deduplicated 46-row median altitude (`Z = 2574.066650390625`).
+- [x] Reduce the default placement clearance to 0.25 units and expose it as a Base Builder margin slider.
+- [x] Require both teams in every state to have an uplink and at least one repair pad inside same-team power range.
+- [x] Add a curated Base in a Box template with a deployed powered repair pad and the requested twelve-crate starter kit.
 - [x] Complete headed WebView2 verification of repository setup, placement preview, Shift-drag, Escape, grayscale controls, texture decoding, DPI layout, and camera performance.
 - [x] Clear the previous repository slug when creating or importing a different map so Save cannot overwrite the formerly selected map.
 - [x] Publish and verify the tagged v0.3.0 self-contained desktop release.
@@ -71,7 +77,7 @@ Updated: 2026-08-30
 - Original `state` rows use entity tokens followed by team, XYZ, rotation XYZ (radians), and active state; cargo rows include a subtype token.
 - Ghidra confirms power-cell validation uses `backupRadius - 10`, `2 * serviceRadius + 10`, and `serviceRadius - 10` thresholds. These radii are server-supplied, so the editor exposes editable offline defaults.
 - Ghidra-verified checkerboard triangle sampling plus shipped placements yield median ground offsets of 16.420 (gun) and 15.847 (flak), with rotations stored in radians.
-- Converted 499 original terrain textures, 114 model material textures, and 19 original shape models for direct browser use.
+- Converted 499 original terrain textures, 163 model material textures, and 21 original shape models for direct browser use.
 - The new-server layout will be a versioned JSON representation of state entities, with map metadata and validation settings retained for round trips.
 - Dense shipped placements support offline defaults of 300 units for service and 80 units for backup; both remain editable because live servers supply the authoritative values.
 - Every exported ZIP now carries original-format files, `base-layout.json`, and a browser-project backup.
@@ -80,11 +86,11 @@ Updated: 2026-08-30
 - Powered connected-component analysis found 73 reusable bases across 19 shipped maps, containing 832 original units. Nearby cargo, uplinks, and supply ships attach only to their nearest base, avoiding duplication.
 - Template tests match all 832 units back to their source state rows and source terrain heights, then verify team remapping, rotation, footprint auto-fit, bounds clamping, and destination-terrain conformance.
 - Terrain material rendering now keeps original categorical texture IDs on disk while producing normalized, adjustable transitions in the viewport; the paint brush uses deterministic feathering so repeated strokes remain stable. Texture texels use strict nearest-neighbor sampling with smoothing and mipmaps disabled, preserving the source pixels.
-- State-file medians provide legacy origin offsets of 2.983 units (power cell), 2.742 (refuel pad), 3.853 (repair pad), 3.200 (missile launcher), and 4.528 (skypump). New placement takes the larger of that offset and the extracted rendered-model underside, scans the full model-bounds footprint plus covered terrain vertices, and retains a 1.25-unit bottom margin.
+- State-file medians provide legacy origin offsets of 2.983 units (power cell), 2.742 (refuel pad), 3.853 (repair pad), 3.200 (missile launcher), and 4.528 (skypump). New placement takes the larger of that offset and the extracted rendered-model underside, scans the full model-bounds footprint plus covered terrain vertices, and retains a 0.25-unit bottom margin.
 - Ghidra confirms the original client samples averaged terrain normals over a square radius (`TerrainNormal_SampleAroundPoint`) and raises map-editor objects by their model height above sampled terrain (`MapEdit_PlaceSelectedObject`). The browser implementation extends that behavior with full-footprint clearance to prevent corner clipping.
 - The live viewport now renders on invalidation instead of continuously, reuses static shadow maps while the camera moves, caps pixel density at 1.5×, raycasts only terrain during pointer motion, and coalesces high-frequency pointer events to animation frames.
 - A local 600,000-pixel blend-loop microbenchmark dropped from 338.8 ms with per-pixel contribution allocations to 69.5 ms with the reusable weight buffer (4.88× faster); headed WebView2 timing subsequently held 59–60 FPS in the tested idle, preview, and camera-motion paths.
-- Shipped models exist for power, refuel, repair, gun, flak, missile launcher, skypump, darklight, uplink, and cargo. Shield, heavy silo, portal, spy bug, and template-only supply ships remain readable from legacy maps but are omitted from new placement.
+- Shipped models exist for power, refuel, repair, gun, flak, missile launcher, skypump, darklight, uplink, supply starships, and cargo. Shield, heavy silo, portal, and spy bug remain readable from legacy maps but are omitted from new placement.
 - Final checks pass: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run verify:formats`, `npm run build`, and a local HTTP 200 response.
 - Added a site-wide social preview matching the editor's dark steel, canyon, and team-color visual language.
 - The editor is committed and pushed to the `main` branch of `blackwatergaming/wulfram-mapeditor`.

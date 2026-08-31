@@ -59,6 +59,12 @@ export interface TextureAsset {
   average: string;
 }
 
+export interface TeamMaterialVariant {
+  neutral: string;
+  team1: string;
+  team2: string;
+}
+
 export interface ModelAsset {
   url: string;
   bounds: { min: Vec3; max: Vec3 };
@@ -70,6 +76,7 @@ export interface AssetManifest {
   provenance: Record<string, string>;
   terrainTextures: Record<string, TextureAsset>;
   materials: Record<string, TextureAsset>;
+  materialVariants: Record<string, TeamMaterialVariant>;
   models: Record<string, ModelAsset>;
   baseTemplates: { url: string; count: number };
   demo: { name: string; baseUrl: string; files: string[] };
@@ -87,6 +94,8 @@ export interface BaseTemplateUnit {
 export interface BaseTemplate {
   id: string;
   name: string;
+  description?: string;
+  curated?: boolean;
   sourceMap: string;
   sourceState: string;
   sourceTeam: number;
@@ -108,6 +117,7 @@ export interface BaseTemplateLibrary {
     clusterDistance: number;
     auxiliaryDistance: number;
     minimumCoreUnits: number;
+    curatedTemplates?: number;
   };
   templates: BaseTemplate[];
 }
@@ -210,6 +220,7 @@ export const CATALOG: CatalogItem[] = [
   { key: 'darklight', token: 'd', label: 'Darklight', shortLabel: 'DL', description: 'Darklight support unit', category: 'support', requiresPower: false, footprint: 13 },
   { key: 'bug', token: 'b', label: 'Spy Bug', shortLabel: 'SB', description: 'Small reconnaissance unit', category: 'support', requiresPower: false, footprint: 7 },
   { key: 'uplink', token: 'u', label: 'Uplink', shortLabel: 'UP', description: 'Team communications uplink', category: 'logistics', requiresPower: false, footprint: 10 },
+  { key: 'starship', token: 'h', label: 'Supply Starship', shortLabel: 'SS', description: 'State-tagged team supply ship', category: 'logistics', requiresPower: false, footprint: 36 },
   { key: 'cargo-power', token: 'c', subtype: 'e', label: 'Power Cell Cargo', shortLabel: 'CP', description: 'Deployable power-cell cargo', category: 'logistics', requiresPower: false, footprint: 8 },
   { key: 'cargo-refuel', token: 'c', subtype: 'f', label: 'Refuel Cargo', shortLabel: 'CR', description: 'Deployable refuel-pad cargo', category: 'logistics', requiresPower: false, footprint: 8 },
   { key: 'cargo-repair', token: 'c', subtype: 'r', label: 'Repair Cargo', shortLabel: 'CX', description: 'Deployable repair-pad cargo', category: 'logistics', requiresPower: false, footprint: 8 },
@@ -234,8 +245,11 @@ export const DEFAULT_VALIDATION: ValidationSettings = {
 /** The extracted .shape coordinates are rendered at this world-unit scale. */
 export const MODEL_WORLD_SCALE = 2.1;
 
-/** Visible air gap retained below terrain-conformed structures. */
-export const STRUCTURE_BOTTOM_MARGIN = 1.25;
+/** Minimum air gap retained below terrain-conformed structures. */
+export const STRUCTURE_BOTTOM_MARGIN = 0.25;
+
+/** Median absolute Z across the 46 unique supply-starship rows in all shipped maps. */
+export const STARSHIP_SPAWN_HEIGHT = 2574.066650390625;
 
 export const DEFAULT_BASE_LAYOUT_ID = 'default';
 
@@ -503,6 +517,11 @@ export function usesFootprintTerrainSnap(token: string): boolean {
     || token === 'c';
 }
 
+/** Keeps newly placed airborne starships at the authored example-state altitude. */
+export function placementHeightForToken(token: string, terrainConformedHeight: number): number {
+  return token === 'h' ? STARSHIP_SPAWN_HEIGHT : terrainConformedHeight;
+}
+
 /**
  * Expands legacy placement defaults to the actual rendered model bounds. Some
  * pad models are much wider and extend farther below their origin than their
@@ -513,7 +532,7 @@ export function structureTerrainClearance(
   manifest: AssetManifest | undefined,
   requestedFootprint: number,
   requestedGroundOffset: number,
-  requestedMargin = 0.75,
+  requestedMargin = STRUCTURE_BOTTOM_MARGIN,
 ): StructureTerrainClearance {
   const name = modelNameFor(entity);
   const bounds = name ? manifest?.models[name]?.bounds : undefined;
@@ -545,7 +564,7 @@ export function snapStructureToTerrain(
   footprint: number,
   yawRadians: number,
   groundOffset: number,
-  margin = 0.75,
+  margin = STRUCTURE_BOTTOM_MARGIN,
 ): TerrainSnapResult {
   const halfExtent = Math.max(0.5, Math.abs(footprint) * 0.5);
   const yaw = Number.isFinite(yawRadians) ? yawRadians : 0;
@@ -621,6 +640,7 @@ export function instantiateBaseTemplate(
   requestedScale = 1,
   yawRadians = 0,
   manifest?: AssetManifest,
+  placementMargin = STRUCTURE_BOTTOM_MARGIN,
 ): BaseTemplatePlacement {
   const units = template.units.filter((unit) => {
     const entity = { token: unit.token, subtype: unit.subtype, team };
@@ -670,16 +690,19 @@ export function instantiateBaseTemplate(
       manifest,
       (item?.footprint ?? 10) * scale,
       unit.groundOffset,
+      placementMargin,
     );
     const snap = usesFootprintTerrainSnap(unit.token)
       ? snapStructureToTerrain(terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
       : undefined;
+    const terrainConformedHeight = snap?.height
+      ?? sampleHeight(terrain, x, y) + (Number.isFinite(unit.groundOffset) ? unit.groundOffset : 0);
     return {
       id: createId(`${template.id}-${index + 1}`),
       token: unit.token,
       subtype: unit.subtype,
       team: Math.trunc(team),
-      position: [x, y, snap?.height ?? sampleHeight(terrain, x, y) + (Number.isFinite(unit.groundOffset) ? unit.groundOffset : 0)],
+      position: [x, y, placementHeightForToken(unit.token, terrainConformedHeight)],
       rotation: [snap?.pitch ?? unit.rotation[0], snap?.roll ?? unit.rotation[1], yaw],
       active: Math.trunc(unit.active),
     };
@@ -703,9 +726,22 @@ export function modelNameFor(entity: Pick<StateEntity, 'token' | 'team'>): strin
     p: `skypump_${team}`,
     d: `darklight_${team}`,
     u: team === 2 ? 'uplinkblue' : 'uplinkred',
+    h: `spaceship_${team}`,
     c: 'cargo',
   };
   return models[entity.token];
+}
+
+/** Resolves the original per-face team tile remap for an extracted material. */
+export function materialNameForTeam(
+  materialName: string,
+  team: number,
+  manifest: Pick<AssetManifest, 'materials' | 'materialVariants'>,
+): string {
+  const variants = manifest.materialVariants?.[materialName];
+  if (!variants) return materialName;
+  const remapped = team === 1 ? variants.team1 : team === 2 ? variants.team2 : variants.neutral;
+  return manifest.materials[remapped] ? remapped : materialName;
 }
 
 export function hasModelForEntity(
@@ -743,6 +779,7 @@ export function validateProject(project: WulframProject): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const { terrain, entities, validation } = project;
   const editable = entities.filter((entity) => entity.token !== '*');
+  const powerServiceRange = Math.max(0, validation.serviceRadius - 10);
   for (const entity of editable) {
     const item = catalogFor(entity);
     const [x, y, z] = entity.position;
@@ -768,7 +805,7 @@ export function validateProject(project: WulframProject): ValidationIssue[] {
       issues.push({ entityId: entity.id, severity: 'error', code: 'overlap', message: `Overlaps ${catalogFor(collision)?.label ?? ENTITY_NAMES[collision.token] ?? 'another unit'}.` });
     }
     if (item?.requiresPower) {
-      const powered = editable.some((cell) => cell.token === 'e' && cell.team === entity.team && Math.hypot(x - cell.position[0], y - cell.position[1]) <= validation.serviceRadius - 10);
+      const powered = editable.some((cell) => cell.token === 'e' && cell.team === entity.team && Math.hypot(x - cell.position[0], y - cell.position[1]) <= powerServiceRange);
       if (!powered) issues.push({ entityId: entity.id, severity: 'error', code: 'power', message: 'Outside power-cell service range.' });
     }
     if (entity.token === 'e') {
@@ -781,6 +818,33 @@ export function validateProject(project: WulframProject): ValidationIssue[] {
       } else if (nearest <= 2 * validation.serviceRadius + 10) {
         issues.push({ entityId: entity.id, severity: 'error', code: 'cell-overlap', message: 'Primary cell range overlaps another primary.' });
       }
+    }
+  }
+
+  for (const team of [1, 2]) {
+    const teamEntities = editable.filter((entity) => entity.team === team);
+    const stateEntityId = `state-team-${team}`;
+    if (!teamEntities.some((entity) => entity.token === 'u')) {
+      issues.push({
+        entityId: stateEntityId,
+        severity: 'error',
+        code: 'state-uplink',
+        message: `Team ${team} must have an uplink.`,
+      });
+    }
+
+    const repairPads = teamEntities.filter((entity) => entity.token === 'r');
+    const poweredRepairPad = repairPads.some((repairPad) => teamEntities.some((cell) => (
+      cell.token === 'e'
+      && Math.hypot(repairPad.position[0] - cell.position[0], repairPad.position[1] - cell.position[1]) <= powerServiceRange
+    )));
+    if (!poweredRepairPad) {
+      issues.push({
+        entityId: repairPads[0]?.id ?? stateEntityId,
+        severity: 'error',
+        code: 'state-powered-repair',
+        message: `Team ${team} must have at least one powered repair pad.`,
+      });
     }
   }
   return issues;

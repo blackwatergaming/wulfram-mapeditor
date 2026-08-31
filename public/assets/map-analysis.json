@@ -86,70 +86,70 @@
       "name": "Cargo Box",
       "sampleCount": 438,
       "heightOffset": 2.607,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "d": {
       "name": "Darklight",
       "sampleCount": 8,
       "heightOffset": 3.234,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "e": {
       "name": "Power Cell",
       "sampleCount": 166,
       "heightOffset": 2.983,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "f": {
       "name": "Refuel Pad",
       "sampleCount": 146,
       "heightOffset": 2.742,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "g": {
       "name": "Gun Turret",
       "sampleCount": 166,
       "heightOffset": 16.42,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "r": {
       "name": "Repair Pad",
       "sampleCount": 89,
       "heightOffset": 3.853,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "s": {
       "name": "Flak Turret",
       "sampleCount": 224,
       "heightOffset": 15.847,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "L": {
       "name": "Missile Launcher",
       "sampleCount": 9,
       "heightOffset": 3.2,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "p": {
       "name": "Skypump",
       "sampleCount": 12,
       "heightOffset": 4.528,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     },
     "u": {
       "name": "Uplink",
       "sampleCount": 28,
       "heightOffset": 1.729,
-      "snapMargin": 1.25,
+      "snapMargin": 0.25,
       "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin"
     }
   },

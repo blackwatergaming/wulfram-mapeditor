@@ -44,6 +44,7 @@ import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
 import { TerrainViewport, type EditorMode, type ModelTransformMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
 import { heightsFromGrayscaleRgba } from '@/lib/heightmap';
+import { constrainEntityTransform, hasLockedAltitudeAndRotation } from '@/lib/model-transform';
 import {
   terrainBrushMix,
   terrainBrushWeight,
@@ -77,6 +78,7 @@ import {
   CATALOG,
   DEFAULT_VALIDATION,
   ENTITY_NAMES,
+  STRUCTURE_BOTTOM_MARGIN,
   activateBaseLayout,
   catalogFor,
   catalogItemHasModel,
@@ -90,6 +92,7 @@ import {
   parseLand,
   parseLines,
   parseState,
+  placementHeightForToken,
   sampleHeight,
   sampleSlopeDegrees,
   snapStructureToTerrain,
@@ -195,6 +198,7 @@ function NumberField({
   step = 1,
   min,
   max,
+  disabled = false,
 }: {
   label: string;
   value: number;
@@ -202,11 +206,13 @@ function NumberField({
   step?: number;
   min?: number;
   max?: number;
+  disabled?: boolean;
 }) {
   return (
     <label className="number-field">
       <span>{label}</span>
       <input
+        disabled={disabled}
         max={max}
         min={min}
         onChange={(event) => {
@@ -264,6 +270,7 @@ export function EditorApp() {
   const [textureSearch, setTextureSearch] = useState('');
   const [texturePage, setTexturePage] = useState(0);
   const [team, setTeam] = useState(1);
+  const [placementHeight, setPlacementHeight] = useState(STRUCTURE_BOTTOM_MARGIN);
   const [selectedPlacementKey, setSelectedPlacementKey] = useState('power');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>();
   const [templateScale, setTemplateScale] = useState(1);
@@ -601,9 +608,14 @@ export function EditorApp() {
     () => project?.entities.find((entity) => entity.id === selectedEntityId),
     [project, selectedEntityId],
   );
+  const selectedTransformLocked = Boolean(selectedEntity && hasLockedAltitudeAndRotation(selectedEntity));
   const selectedIssues = useMemo(
     () => issues.filter((issue) => issue.entityId === selectedEntityId),
     [issues, selectedEntityId],
+  );
+  const stateRequirementIssues = useMemo(
+    () => issues.filter((issue) => issue.code === 'state-uplink' || issue.code === 'state-powered-repair'),
+    [issues],
   );
   const selectedTemplate = useMemo(
     () => baseTemplates?.templates.find((template) => template.id === selectedTemplateId),
@@ -711,6 +723,7 @@ export function EditorApp() {
         templateScale,
         templateYaw * Math.PI / 180,
         manifest,
+        placementHeight,
       ).entities.map((entity, index) => ({ ...entity, id: `placement-preview-${index}` }));
     }
     const item = placeableCatalog.find((entry) => entry.key === selectedPlacementKey);
@@ -725,7 +738,7 @@ export function EditorApp() {
       manifest,
       item.footprint,
       offset,
-      placementDefault?.snapMargin,
+      placementHeight,
     );
     const snap = usesFootprintTerrainSnap(item.token)
       ? snapStructureToTerrain(project.terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
@@ -735,11 +748,11 @@ export function EditorApp() {
       token: item.token,
       subtype: item.subtype,
       team,
-      position: [x, y, snap?.height ?? ground + offset],
+      position: [x, y, placementHeightForToken(item.token, snap?.height ?? ground + offset)],
       rotation: [snap?.pitch ?? defaultData?.pitch ?? 0, snap?.roll ?? defaultData?.roll ?? 0, yaw],
       active: 1,
     }];
-  }, [analysis, cursor, manifest, mode, placeableCatalog, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
+  }, [analysis, cursor, manifest, mode, placeableCatalog, placementHeight, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
 
   const applyBrush = useCallback((worldX: number, worldY: number) => {
     if (!manifest) return;
@@ -822,6 +835,7 @@ export function EditorApp() {
   }, [applyBrush, markDirty, project, pushHistory]);
 
   const conformEntityToTerrain = useCallback((entity: StateEntity, terrain: WulframProject['terrain']) => {
+    if (hasLockedAltitudeAndRotation(entity)) return;
     const item = catalogFor(entity);
     const placementDefault = analysis?.placementDefaults?.[entity.token];
     const turretDefault = analysis?.turretDefaults[entity.token];
@@ -832,7 +846,7 @@ export function EditorApp() {
         manifest,
         item?.footprint ?? 10,
         groundOffset,
-        placementDefault?.snapMargin,
+        placementHeight,
       );
       const snap = snapStructureToTerrain(
         terrain,
@@ -849,7 +863,7 @@ export function EditorApp() {
     } else {
       entity.position[2] = sampleHeight(terrain, entity.position[0], entity.position[1]) + groundOffset;
     }
-  }, [analysis, manifest]);
+  }, [analysis, manifest, placementHeight]);
 
   const resolveEntityMove = useCallback((source: StateEntity, x: number, y: number): StateEntity => {
     if (!project) return source;
@@ -876,15 +890,22 @@ export function EditorApp() {
   }, [conformEntityToTerrain, mutate, project]);
 
   const transformEntity = useCallback((id: string, position: Vec3, rotation: Vec3) => {
+    const transformLocked = Boolean(project?.entities.find((entity) => entity.id === id && hasLockedAltitudeAndRotation(entity)));
     mutate((draft) => {
       const entity = draft.entities.find((candidate) => candidate.id === id);
       if (!entity) return;
-      entity.position = [...position] as Vec3;
-      entity.rotation = [...rotation] as Vec3;
+      const constrained = constrainEntityTransform(entity, position, rotation);
+      entity.position = constrained.position;
+      entity.rotation = constrained.rotation;
     }, true, 'base');
     setSelectedEntityId(id);
-    setNotice({ tone: 'ready', text: `3D transform committed · XYZ ${position.map((value) => value.toFixed(1)).join(', ')} · rotation ${rotation.map((value) => value.toFixed(3)).join(', ')}` });
-  }, [mutate]);
+    setNotice({
+      tone: 'ready',
+      text: transformLocked
+        ? `Starship moved to X ${position[0].toFixed(1)} · Y ${position[1].toFixed(1)} · altitude and orientation locked`
+        : `3D transform committed · XYZ ${position.map((value) => value.toFixed(1)).join(', ')} · rotation ${rotation.map((value) => value.toFixed(3)).join(', ')}`,
+    });
+  }, [mutate, project]);
 
   const placeUnit = useCallback((x: number, y: number) => {
     if (!project) return;
@@ -897,6 +918,7 @@ export function EditorApp() {
         templateScale,
         templateYaw * Math.PI / 180,
         manifest,
+        placementHeight,
       );
       if (!placement.entities.length) return;
       mutate((draft) => { draft.entities.push(...placement.entities); });
@@ -922,7 +944,7 @@ export function EditorApp() {
       manifest,
       item.footprint,
       offset,
-      placementDefault?.snapMargin,
+      placementHeight,
     );
     const snap = usesFootprintTerrainSnap(item.token)
       ? snapStructureToTerrain(project.terrain, x, y, clearance.footprint, yaw, clearance.groundOffset, clearance.margin)
@@ -932,14 +954,14 @@ export function EditorApp() {
       token: item.token,
       subtype: item.subtype,
       team,
-      position: [x, y, snap?.height ?? ground + offset],
+      position: [x, y, placementHeightForToken(item.token, snap?.height ?? ground + offset)],
       rotation: [snap?.pitch ?? defaultData?.pitch ?? 0, snap?.roll ?? defaultData?.roll ?? 0, yaw],
       active: 1,
     };
     mutate((draft) => { draft.entities.push(entity); });
     setSelectedEntityId(entity.id);
     setNotice({ tone: 'ready', text: `${item.label} placed at ${x.toFixed(1)}, ${y.toFixed(1)}` });
-  }, [analysis, manifest, mutate, placeableCatalog, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
+  }, [analysis, manifest, mutate, placeableCatalog, placementHeight, project, selectedPlacementKey, selectedTemplate, team, templateScale, templateYaw]);
 
   const updateSelected = useCallback((change: (entity: StateEntity) => void, record = true) => {
     if (!selectedEntityId) return;
@@ -1613,11 +1635,22 @@ export function EditorApp() {
                   <button className={team === 1 ? 'team-one active' : 'team-one'} onClick={() => setTeam(1)} type="button">TEAM 1</button>
                   <button className={team === 2 ? 'team-two active' : 'team-two'} onClick={() => setTeam(2)} type="button">TEAM 2</button>
                 </div>
+                <div className="placement-height-control">
+                  <RangeField label="Default placement height" max={2} min={0} onChange={setPlacementHeight} step={0.05} suffix="u" value={placementHeight} />
+                  <div aria-hidden="true" className="placement-height-scale">
+                    <span>0u</span>
+                    <span>0.5u</span>
+                    <span>1u</span>
+                    <span>1.5u</span>
+                    <span>2u</span>
+                  </div>
+                  <p className="field-help">Extra clearance above terrain contact for previews, new placements, templates, and terrain-tuned moves.</p>
+                </div>
               </section>
               <section className="panel-section template-library">
-                <div className="section-heading"><p className="section-label">SHIPPED BASE TEMPLATES</p><span>{baseTemplates.templates.length}</span></div>
+                <div className="section-heading"><p className="section-label">BASE TEMPLATES</p><span>{baseTemplates.templates.length}</span></div>
                 <select
-                  aria-label="Shipped base template"
+                  aria-label="Base template"
                   className="template-select"
                   onChange={(event) => {
                     const templateId = event.target.value || undefined;
@@ -1627,7 +1660,7 @@ export function EditorApp() {
                   }}
                   value={selectedTemplateId ?? ''}
                 >
-                  <option value="">Choose a discovered base…</option>
+                  <option value="">Choose a base template…</option>
                   {baseTemplates.templates.map((template) => (
                     <option key={template.id} value={template.id}>{template.name} · {template.unitCount} units</option>
                   ))}
@@ -1831,23 +1864,24 @@ export function EditorApp() {
                 <p className="section-label">POSITION</p>
                 <div className="number-grid three">
                   {(['X', 'Y', 'Z'] as const).map((label, index) => (
-                    <NumberField key={label} label={label} onChange={(value) => updateSelected((entity) => {
+                    <NumberField disabled={selectedTransformLocked && index === 2} key={label} label={label} onChange={(value) => updateSelected((entity) => {
+                      if (hasLockedAltitudeAndRotation(entity) && index === 2) return;
                       entity.position[index] = value;
                       if (index !== 2 && usesFootprintTerrainSnap(entity.token)) conformEntityToTerrain(entity, project.terrain);
                     })} step={0.1} value={selectedEntity.position[index]} />
                   ))}
                 </div>
-                <button className="secondary-action" onClick={() => updateSelected((entity) => conformEntityToTerrain(entity, project.terrain))} type="button"><Mountain /> Snap and conform to footprint</button>
+                <button className="secondary-action" disabled={selectedTransformLocked} onClick={() => updateSelected((entity) => conformEntityToTerrain(entity, project.terrain))} type="button"><Mountain /> {selectedTransformLocked ? 'Starship altitude locked' : 'Snap and conform to footprint'}</button>
               </section>
               <section className="inspector-block transform-tool-controls">
                 <p className="section-label">CTRL 3D TRANSFORM</p>
                 <div className="brush-option-buttons">
-                  <button className={modelTransformMode === 'translate' ? 'active' : ''} onClick={() => setModelTransformMode('translate')} type="button">Move XYZ</button>
-                  <button className={modelTransformMode === 'rotate' ? 'active' : ''} onClick={() => setModelTransformMode('rotate')} type="button">Pitch / Roll / Yaw</button>
+                  <button className={modelTransformMode === 'translate' || selectedTransformLocked ? 'active' : ''} onClick={() => setModelTransformMode('translate')} type="button">{selectedTransformLocked ? 'Move XY' : 'Move XYZ'}</button>
+                  <button className={modelTransformMode === 'rotate' && !selectedTransformLocked ? 'active' : ''} disabled={selectedTransformLocked} onClick={() => setModelTransformMode('rotate')} type="button">Pitch / Roll / Yaw</button>
                 </div>
-                <p className="field-help">Hold Ctrl in the viewport to reveal standard 3D handles. Move is free on all three axes; Rotate edits pitch, roll, and yaw. One drag creates one undo step.</p>
+                <p className="field-help">{selectedTransformLocked ? 'Starships move only in X/Y. Their absolute Z, pitch, roll, and yaw remain locked.' : 'Hold Ctrl in the viewport to reveal standard 3D handles. Move is free on all three axes; Rotate edits pitch, roll, and yaw. One drag creates one undo step.'}</p>
               </section>
-              <section className="inspector-block">
+              {!selectedTransformLocked && <section className="inspector-block">
                 <RangeField
                   label="Yaw"
                   max={360}
@@ -1869,7 +1903,7 @@ export function EditorApp() {
                   <NumberField label="Pitch rad" onChange={(value) => updateSelected((entity) => { entity.rotation[0] = value; })} step={0.001} value={selectedEntity.rotation[0]} />
                   <NumberField label="Roll rad" onChange={(value) => updateSelected((entity) => { entity.rotation[1] = value; })} step={0.001} value={selectedEntity.rotation[1]} />
                 </div>
-              </section>
+              </section>}
               <section className="inspector-block">
                 <label className="toggle-row"><span><strong>Active on load</strong><small>Original state flag</small></span><input aria-label="Active on load" checked={Boolean(selectedEntity.active)} onChange={(event) => updateSelected((entity) => { entity.active = event.target.checked ? 1 : 0; })} type="checkbox" /></label>
                 <button className="danger-action" onClick={() => {
@@ -1896,9 +1930,10 @@ export function EditorApp() {
               </div>
               {selectedTemplate && (
                 <section className="inspector-block template-detail">
-                  <div><span>Source map</span><strong>{selectedTemplate.sourceMap}</strong></div>
+                  <div><span>Source</span><strong>{selectedTemplate.curated ? 'Curated' : selectedTemplate.sourceMap}</strong></div>
                   <div><span>Original team</span><strong>{selectedTemplate.sourceTeam}</strong></div>
                   <div><span>Footprint</span><strong>{Math.round(selectedTemplate.footprint.width)} × {Math.round(selectedTemplate.footprint.height)} u</strong></div>
+                  {selectedTemplate.description && <p>{selectedTemplate.description}</p>}
                   <p>Placement remaps the formation to {team === 0 ? 'Neutral' : `Team ${team}`}, rotates and scales its XY offsets, then conforms modeled units to the destination terrain.</p>
                 </section>
               )}
@@ -1906,6 +1941,14 @@ export function EditorApp() {
                 <div><strong className={errorCount ? 'has-errors' : ''}>{errorCount}</strong><span>Errors</span></div>
                 <div><strong>{warningCount}</strong><span>Warnings</span></div>
                 <div><strong>{issues.length - errorCount - warningCount}</strong><span>Info</span></div>
+              </section>
+              <section className="inspector-block validation-list">
+                <div className="section-heading"><p className="section-label">STATE REQUIREMENTS</p><span>{stateRequirementIssues.length ? `${stateRequirementIssues.length} missing` : 'VALID'}</span></div>
+                {stateRequirementIssues.length ? stateRequirementIssues.map((issue) => (
+                  <div className="validation-item error" key={`${issue.entityId}-${issue.code}`}>
+                    <AlertTriangle /><span>{issue.message}</span>
+                  </div>
+                )) : <div className="validation-item valid"><CheckCircle2 /><span>Both teams have an uplink and a powered repair pad.</span></div>}
               </section>
               <section className="inspector-block">
                 <p className="section-label">SERVER-SUPPLIED RADII</p>

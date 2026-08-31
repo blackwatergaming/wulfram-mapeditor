@@ -42,16 +42,16 @@ npm run dev
 ## Self-contained Windows release build
 
 ```powershell
-npm run build:desktop -- --version 0.5.0
+npm run build:desktop -- --version 0.5.1
 ```
 
-The archive is written to `dist/desktop/WulframForge-0.5.0-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
+The archive is written to `dist/desktop/WulframForge-0.5.1-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
 
 To include an official fixed WebView2 runtime for an offline package:
 
 ```powershell
 $env:WEBVIEW2_FIXED_RUNTIME_DIR = 'C:\path\to\fixed-webview2-runtime'
-npm run build:desktop -- --version 0.5.0
+npm run build:desktop -- --version 0.5.1
 ```
 
 ## Research/debug desktop build

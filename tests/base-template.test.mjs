@@ -7,13 +7,17 @@ import { fileURLToPath } from 'node:url';
 import {
   CATALOG,
   MODEL_WORLD_SCALE,
+  STARSHIP_SPAWN_HEIGHT,
   STRUCTURE_BOTTOM_MARGIN,
   catalogFor,
   catalogItemHasModel,
   createBlankProject,
   instantiateBaseTemplate,
+  materialNameForTeam,
+  modelNameFor,
   parseLand,
   parseState,
+  placementHeightForToken,
   sampleHeight,
   snapStructureToTerrain,
   structureTerrainClearance,
@@ -33,7 +37,7 @@ function circularDistance(left, right) {
   return Math.abs(Math.atan2(Math.sin(left - right), Math.cos(left - right)));
 }
 
-void test('generated library contains every discovered powered base component', () => {
+void test('generated library contains every discovered powered base component and curated template', () => {
   assert.equal(library.format, 'wulfram-base-template-library');
   assert.equal(library.version, 1);
   assert.equal(library.templates.length, manifest.baseTemplates.count);
@@ -55,7 +59,32 @@ void test('generated library contains every discovered powered base component', 
     units += template.units.length;
   }
   assert.ok(units >= 800, 'The extracted library should include complete base formations and their nearby logistics.');
-  console.log(`Verified ${library.templates.length} shipped base templates containing ${units} terrain-relative units.`);
+  console.log(`Verified ${library.templates.length} base templates containing ${units} terrain-relative units.`);
+});
+
+void test('Base in a Box contains a powered repair pad and the requested cargo kit', () => {
+  const template = library.templates.find((candidate) => candidate.id === 'curated-base-in-a-box');
+  assert.ok(template, 'Expected the curated Base in a Box template.');
+  assert.equal(template.curated, true);
+  assert.equal(template.unitCount, 14);
+  assert.equal(template.units.filter((unit) => unit.token === 'r').length, 1);
+  assert.equal(template.units.filter((unit) => unit.token === 'e').length, 1);
+  const cargoCounts = Object.fromEntries(['e', 'f', 'p', 'g', 's'].map((subtype) => [
+    subtype,
+    template.units.filter((unit) => unit.token === 'c' && unit.subtype === subtype).length,
+  ]));
+  assert.deepEqual(cargoCounts, { e: 2, f: 1, p: 3, g: 3, s: 3 });
+  const cargo = template.units.filter((unit) => unit.token === 'c');
+  assert.deepEqual(template.footprint, { width: 210, height: 210 });
+  for (const unit of cargo) close(Math.hypot(...unit.offset), 105, 0.001, `${unit.subtype} cargo ring radius`);
+  const angles = cargo.map((unit) => (Math.atan2(unit.offset[1], unit.offset[0]) + 2 * Math.PI) % (2 * Math.PI)).sort((left, right) => left - right);
+  for (let index = 0; index < angles.length; index += 1) {
+    const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? 2 * Math.PI : 0);
+    close(next - angles[index], Math.PI / 6, 0.00001, `cargo ring gap ${index + 1}`);
+  }
+  const repair = template.units.find((unit) => unit.token === 'r');
+  const cell = template.units.find((unit) => unit.token === 'e');
+  assert.ok(Math.hypot(repair.offset[0] - cell.offset[0], repair.offset[1] - cell.offset[1]) <= 290);
 });
 
 void test('template records reconstruct units from their original maps', { skip: !fs.existsSync(sourceMaps) }, () => {
@@ -64,6 +93,7 @@ void test('template records reconstruct units from their original maps', { skip:
   let reconstructed = 0;
 
   for (const template of library.templates) {
+    if (template.curated) continue;
     const mapDirectory = path.join(sourceMaps, template.sourceMap);
     let terrain = terrainCache.get(template.sourceMap);
     if (!terrain) {
@@ -135,7 +165,11 @@ void test('template placement rotates, auto-fits, clamps, remaps, and terrain-co
     assert.equal(entity.team, 2, `unit ${index}: team remap`);
     assert.ok(entity.position[0] >= 10 - 1e-9 && entity.position[0] <= terrain.worldWidth - 10 + 1e-9, `unit ${index}: X bounds`);
     assert.ok(entity.position[1] >= 10 - 1e-9 && entity.position[1] <= terrain.worldHeight - 10 + 1e-9, `unit ${index}: Y bounds`);
-    if (usesFootprintTerrainSnap(entity.token)) {
+    if (entity.token === 'h') {
+      close(entity.position[2], STARSHIP_SPAWN_HEIGHT, 1e-9, `unit ${index}: fixed starship Z`);
+      close(entity.rotation[0], source.rotation[0], 1e-12, `unit ${index}: authored starship pitch`);
+      close(entity.rotation[1], source.rotation[1], 1e-12, `unit ${index}: authored starship roll`);
+    } else if (usesFootprintTerrainSnap(entity.token)) {
       const clearance = structureTerrainClearance(
         entity,
         manifest,
@@ -218,22 +252,28 @@ void test('repair and refuel pads clear their complete rendered undersides and e
   }
 });
 
-void test('every surviving placeable model uses full-bounds terrain clearance', () => {
+void test('every surviving ground model uses full-bounds terrain clearance', () => {
+  assert.equal(STRUCTURE_BOTTOM_MARGIN, 0.25, 'Quick placement should retain only a quarter-unit underside gap.');
   for (const item of CATALOG) {
     if (!catalogItemHasModel(item, 1, manifest)) continue;
+    if (item.token === 'h') {
+      assert.equal(usesFootprintTerrainSnap(item.token), false, 'Starships use a fixed airborne Z instead of terrain snapping.');
+      continue;
+    }
     assert.equal(usesFootprintTerrainSnap(item.token), true, `${item.key}: terrain snapping`);
     for (const team of [0, 1, 2]) {
       const clearance = structureTerrainClearance({ token: item.token, team }, manifest, item.footprint, 0);
       const asset = manifest.models[clearance.modelName];
       assert.ok(asset, `${item.key}/${team}: model`);
       assert.ok(clearance.groundOffset >= -asset.bounds.min[2] * MODEL_WORLD_SCALE, `${item.key}/${team}: underside`);
+      assert.equal(clearance.margin, STRUCTURE_BOTTOM_MARGIN, `${item.key}/${team}: default underside margin`);
       assert.ok(clearance.footprint >= (asset.bounds.max[0] - asset.bounds.min[0]) * MODEL_WORLD_SCALE, `${item.key}/${team}: width`);
       assert.ok(clearance.footprint >= (asset.bounds.max[1] - asset.bounds.min[1]) * MODEL_WORLD_SCALE, `${item.key}/${team}: depth`);
     }
   }
 });
 
-void test('build placement omits removed types while retaining neutral modeled units', () => {
+void test('build placement omits removed types while retaining neutral modeled units and supply starships', () => {
   const unsupported = CATALOG.filter((item) => !catalogItemHasModel(item, 1, manifest));
   assert.deepEqual(unsupported.map((item) => item.key), [
     'shield',
@@ -246,10 +286,24 @@ void test('build placement omits removed types while retaining neutral modeled u
     'cargo-bug',
   ]);
   const template = library.templates.find((candidate) => candidate.units.some((unit) => unit.token === 'h'));
-  assert.ok(template, 'Expected a discovered base containing a removed supply-ship type.');
+  assert.ok(template, 'Expected a discovered base containing a supply-starship state row.');
   const terrain = createBlankProject('Modeled units only', 17).terrain;
   const placement = instantiateBaseTemplate(template, terrain, [terrain.worldWidth / 2, terrain.worldHeight / 2], 0, 1, 0, manifest);
-  assert.ok(placement.skippedWithoutModel > 0);
   assert.ok(placement.entities.every((entity) => entity.team === 0));
-  assert.ok(placement.entities.every((entity) => entity.token !== 'h'));
+  const starship = placement.entities.find((entity) => entity.token === 'h');
+  assert.ok(starship);
+  assert.equal(starship.position[2], STARSHIP_SPAWN_HEIGHT);
+  assert.equal(placementHeightForToken('h', -999), STARSHIP_SPAWN_HEIGHT);
+  assert.equal(placementHeightForToken('r', 42.5), 42.5);
+  assert.equal(modelNameFor({ token: 'h', team: 1 }), 'spaceship_1');
+  assert.equal(modelNameFor({ token: 'h', team: 2 }), 'spaceship_2');
+});
+
+void test('model materials follow the original neutral, red, and blue team remap table', () => {
+  assert.equal(materialNameForTeam('red_crest', 0, manifest), 'gn1');
+  assert.equal(materialNameForTeam('red_crest', 1, manifest), 'red_crest');
+  assert.equal(materialNameForTeam('red_crest', 2, manifest), 'blue_crest');
+  assert.equal(materialNameForTeam('ventpannel2', 0, manifest), 'ventpannel2G');
+  assert.equal(materialNameForTeam('ventpannel2', 1, manifest), 'ventpannel2R');
+  assert.equal(materialNameForTeam('ventpannel2', 2, manifest), 'ventpannel2');
 });

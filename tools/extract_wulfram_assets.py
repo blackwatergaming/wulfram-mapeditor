@@ -60,7 +60,51 @@ MODEL_NAMES = (
     "skypump_2",
     "darklight_1",
     "darklight_2",
+    "spaceship_1",
+    "spaceship_2",
 )
+
+# Neutral, Team 1, and Team 2 material names from the original client's
+# TeamTilemap_BuildRemapTable. Shape faces can reference any member of a row;
+# the renderer selects the matching team tile at runtime.
+TEAM_MATERIAL_VARIANTS = (
+    ("ventpannel2G", "ventpannel2R", "ventpannel2"),
+    ("ventpannelG", "ventpannelR", "ventpannel"),
+    ("back holesG", "back holesR", "back holes"),
+    ("s2topG", "s2topR", "s2top"),
+    ("s1legsG", "s1legsR", "s1legs"),
+    ("s1sideG", "s1sideR", "s1side"),
+    ("s1wingsG", "s1wingsR", "s1wings"),
+    ("s1bottomsG", "s1bottomsR", "s1bottoms"),
+    ("ramp2G", "ramp2R", "ramp2"),
+    ("ramp1G", "ramp1R", "ramp1"),
+    ("padtankG", "padtankR", "padtankB"),
+    ("p2stacksG", "p2stacksR", "p2stacks"),
+    ("p2sqrfrontG", "p2sqrfrontR", "p2sqrfront"),
+    ("p2sidetwangerG", "p2sidetwangerR", "p2sidetwanger"),
+    ("p2rooffrntG", "p2rooffrntR", "p2rooffrnt"),
+    ("p2frontrtG", "p2frontrtR", "p2frontrt"),
+    ("p2frontlftG", "p2frontlftR", "p2frontlft"),
+    ("p2ramp1G", "p2ramp1R", "p2ramp1"),
+    ("p2ramp2G", "p2ramp2R", "p2ramp2"),
+    ("cargosdG", "cargosdR", "cargosd"),
+    ("cargotopsG", "cargotopsR", "cargotops"),
+    ("mine1", "mine1R", "mine1"),
+    ("caltrop", "caltropR", "caltrop"),
+    ("gn1", "red_crest", "blue_crest"),
+    ("Msentry1G", "Msentry1R", "Msentry1"),
+    ("Msentry3G", "Msentry3R", "Msentry3"),
+    ("ms2G", "ms2R", "ms2"),
+    ("Ms1G", "Ms1R", "Ms1"),
+    ("gn1", "pulsered", "pulseblue"),
+)
+
+TEAM_MATERIAL_BY_NAME = {}
+for neutral, team1, team2 in TEAM_MATERIAL_VARIANTS:
+    variants = {"neutral": neutral, "team1": team1, "team2": team2}
+    for name in (neutral, team1, team2):
+        # The client scans in insertion order; gn1 appears in two rows.
+        TEAM_MATERIAL_BY_NAME.setdefault(name, variants)
 
 ENTITY_NAMES = {
     "i": "Mine",
@@ -101,6 +145,38 @@ BASE_CORE_TOKENS = {"e", "f", "r", "S", "s", "g", "E", "L", "p", "o", "d"}
 BASE_CLUSTER_DISTANCE = 375.0
 BASE_AUXILIARY_DISTANCE = 250.0
 BASE_MINIMUM_CORE_UNITS = 4
+
+CURATED_BASE_TEMPLATES = (
+    {
+        "id": "curated-base-in-a-box",
+        "name": "Base in a Box",
+        "description": "A deployed powered repair pad surrounded by a circular twelve-crate starter base.",
+        "curated": True,
+        "sourceMap": "Curated",
+        "sourceState": "built-in",
+        "sourceTeam": 1,
+        "sourceWorldSize": [5600, 5600],
+        "sourceAnchor": [2800, 2800],
+        "unitCount": 14,
+        "footprint": {"width": 210, "height": 210},
+        "units": [
+            {"token": "r", "offset": [0, 0], "groundOffset": 0, "rotation": [0, 0, 0], "active": 1},
+            {"token": "e", "offset": [0, -55], "groundOffset": 0, "rotation": [0, 0, 0], "active": 1},
+            {"token": "c", "subtype": "e", "offset": [105, 0], "groundOffset": 0, "rotation": [0, 0, 0], "active": 1},
+            {"token": "c", "subtype": "e", "offset": [90.933, 52.5], "groundOffset": 0, "rotation": [0, 0, 0.523598775598], "active": 1},
+            {"token": "c", "subtype": "f", "offset": [52.5, 90.933], "groundOffset": 0, "rotation": [0, 0, 1.047197551197], "active": 1},
+            {"token": "c", "subtype": "p", "offset": [0, 105], "groundOffset": 0, "rotation": [0, 0, 1.570796326795], "active": 1},
+            {"token": "c", "subtype": "p", "offset": [-52.5, 90.933], "groundOffset": 0, "rotation": [0, 0, 2.094395102393], "active": 1},
+            {"token": "c", "subtype": "p", "offset": [-90.933, 52.5], "groundOffset": 0, "rotation": [0, 0, 2.617993877991], "active": 1},
+            {"token": "c", "subtype": "g", "offset": [-105, 0], "groundOffset": 0, "rotation": [0, 0, 3.14159265359], "active": 1},
+            {"token": "c", "subtype": "g", "offset": [-90.933, -52.5], "groundOffset": 0, "rotation": [0, 0, 3.665191429188], "active": 1},
+            {"token": "c", "subtype": "g", "offset": [-52.5, -90.933], "groundOffset": 0, "rotation": [0, 0, 4.188790204786], "active": 1},
+            {"token": "c", "subtype": "s", "offset": [0, -105], "groundOffset": 0, "rotation": [0, 0, 4.712388980385], "active": 1},
+            {"token": "c", "subtype": "s", "offset": [52.5, -90.933], "groundOffset": 0, "rotation": [0, 0, 5.235987755983], "active": 1},
+            {"token": "c", "subtype": "s", "offset": [90.933, -52.5], "groundOffset": 0, "rotation": [0, 0, 5.759586531581], "active": 1},
+        ],
+    },
+)
 
 
 class ShapeReader:
@@ -285,7 +361,9 @@ def extract_terrain_textures(palette: list[tuple[int, int, int]]) -> dict[str, d
     return manifest
 
 
-def extract_models(palette: list[tuple[int, int, int]]) -> tuple[dict[str, dict], dict[str, dict]]:
+def extract_models(
+    palette: list[tuple[int, int, int]],
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict[str, str]]]:
     model_destination = PUBLIC / "models"
     material_destination = PUBLIC / "textures" / "materials"
     model_destination.mkdir(parents=True, exist_ok=True)
@@ -313,6 +391,11 @@ def extract_models(palette: list[tuple[int, int, int]]) -> tuple[dict[str, dict]
     materials = {}
     with zipfile.ZipFile(BASE_ARCHIVE) as archive:
         available = set(archive.namelist())
+        source_materials = set(required_materials)
+        for name in source_materials:
+            variants = TEAM_MATERIAL_BY_NAME.get(name)
+            if variants:
+                required_materials.update(candidate for candidate in variants.values() if candidate in available)
         for name in sorted(required_materials, key=str.casefold):
             if name not in available:
                 print(f"warning: material bitmap {name!r} is unavailable", file=sys.stderr)
@@ -326,7 +409,12 @@ def extract_models(palette: list[tuple[int, int, int]]) -> tuple[dict[str, dict]
                 "height": image.height,
                 "average": average_color(image),
             }
-    return models, materials
+    material_variants = {
+        name: variants
+        for name, variants in TEAM_MATERIAL_BY_NAME.items()
+        if name in source_materials
+    }
+    return models, materials, material_variants
 
 
 @dataclass
@@ -525,7 +613,7 @@ def analyze_maps() -> dict:
             "name": label,
             "sampleCount": len(offsets[token]),
             "heightOffset": round(statistics.median(offsets[token]), 3) if offsets[token] else 0,
-            "snapMargin": 1.25,
+            "snapMargin": 0.25,
             "method": "model-bounds footprint plane, terrain-grid peak clearance, then bottom margin",
         }
         for token, label in footprint_snap_labels.items()
@@ -571,7 +659,7 @@ def analyze_maps() -> dict:
 
 
 def extract_base_templates() -> dict:
-    templates = []
+    templates = [dict(template) for template in CURATED_BASE_TEMPLATES]
     source_states = 0
     source_units = 0
 
@@ -707,6 +795,7 @@ def extract_base_templates() -> dict:
             "clusterDistance": BASE_CLUSTER_DISTANCE,
             "auxiliaryDistance": BASE_AUXILIARY_DISTANCE,
             "minimumCoreUnits": BASE_MINIMUM_CORE_UNITS,
+            "curatedTemplates": len(CURATED_BASE_TEMPLATES),
         },
         "templates": templates,
     }
@@ -732,7 +821,7 @@ def main() -> None:
 
     palette = load_palette()
     texture_manifest = extract_terrain_textures(palette)
-    model_manifest, material_manifest = extract_models(palette)
+    model_manifest, material_manifest, material_variants = extract_models(palette)
     analysis = analyze_maps()
     base_templates = extract_base_templates()
     demo = copy_demo_map()
@@ -752,6 +841,7 @@ def main() -> None:
         },
         "terrainTextures": texture_manifest,
         "materials": material_manifest,
+        "materialVariants": material_variants,
         "models": model_manifest,
         "baseTemplates": {
             "url": "/assets/base-templates.json",
@@ -766,7 +856,7 @@ def main() -> None:
         f"Extracted {len(texture_manifest)} terrain textures, {len(material_manifest)} model materials, "
         f"and {len(model_manifest)} models."
     )
-    print(f"Extracted {len(base_templates['templates'])} powered base templates.")
+    print(f"Extracted {len(base_templates['templates'])} base templates.")
     print(json.dumps(analysis["turretDefaults"], indent=2))
     print(json.dumps(analysis["powerCell"], indent=2))
 

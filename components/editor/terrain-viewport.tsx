@@ -9,13 +9,14 @@ import { cameraInputFromCodes, isCameraControlCode } from '@/lib/camera-controls
 import {
   entityPositionToScene,
   entityRotationToScene,
+  hasLockedAltitudeAndRotation,
   scenePositionToEntity,
   sceneRotationToEntity,
 } from '@/lib/model-transform';
 import type { TerrainBrushShape } from '@/lib/terrain-brush';
 import { textureBlendWeights } from '@/lib/terrain-blend';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
-import { MODEL_WORLD_SCALE, catalogFor, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
+import { MODEL_WORLD_SCALE, catalogFor, materialNameForTeam, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
 
 export type EditorMode = 'terrain' | 'base';
 export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint' | 'stamp';
@@ -298,6 +299,7 @@ function materialTexture(url: string, invalidate: () => void): THREE.Texture {
   if (cached) return cached;
   const texture = new THREE.TextureLoader().load(url, invalidate);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestMipmapLinearFilter;
   materialTextureCache.set(url, texture);
@@ -406,7 +408,8 @@ async function originalUnit(
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     if (part.uvs.length) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(part.uvs, 2));
     geometry.computeVertexNormals();
-    const materialName = shape.materials[part.materialIndex];
+    const sourceMaterialName = shape.materials[part.materialIndex];
+    const materialName = materialNameForTeam(sourceMaterialName, entity.team, manifest);
     const materialAsset = manifest.materials[materialName];
     const material = new THREE.MeshStandardMaterial({
       color: materialAsset ? (entity.team === 0 ? 0xb8b8b8 : 0xffffff) : entity.team === 0 ? 0x9ca3a6 : entity.team === 2 ? 0x688fcb : 0xc56b4c,
@@ -628,18 +631,19 @@ export function TerrainViewport({
     let transformStart = '';
     const selectedTransformParts = () => {
       const id = propsRef.current.selectedEntityId;
+      const entity = id ? entitiesRef.current.find((candidate) => candidate.id === id) : undefined;
       const holder = id
         ? entityRootRef.current.children.find((child) => child.userData.entityId === id) as THREE.Group | undefined
         : undefined;
       const modelHolder = holder?.children.find((child) => child.userData.entityModelHolder === true) as THREE.Group | undefined;
-      return { id, holder, modelHolder };
+      return { id, entity, holder, modelHolder };
     };
     const transformSignature = (object: THREE.Object3D | undefined) => object
       ? [...object.position.toArray(), ...object.rotation.toArray().slice(0, 3)].join(',')
       : '';
     const refreshTransform = () => {
       if (transformControls.dragging) return;
-      const { id, holder, modelHolder } = selectedTransformParts();
+      const { id, entity, holder, modelHolder } = selectedTransformParts();
       if (!transformHeldRef.current || propsRef.current.mode !== 'base' || !holder || !modelHolder) {
         transformControls.detach();
         transformHelper.visible = false;
@@ -648,9 +652,13 @@ export function TerrainViewport({
         requestRender();
         return;
       }
-      const editingRotation = propsRef.current.transformMode === 'rotate';
+      const transformLocked = Boolean(entity && hasLockedAltitudeAndRotation(entity));
+      const editingRotation = propsRef.current.transformMode === 'rotate' && !transformLocked;
       transformControls.setMode(editingRotation ? 'rotate' : 'translate');
       transformControls.space = editingRotation ? 'local' : 'world';
+      transformControls.showX = true;
+      transformControls.showY = !transformLocked;
+      transformControls.showZ = true;
       transformControls.attach(editingRotation ? modelHolder : holder);
       const boundedControls = transformControls as TransformControls & {
         minX: number;
@@ -665,7 +673,7 @@ export function TerrainViewport({
       boundedControls.minZ = -worldHalfHeight;
       boundedControls.maxZ = worldHalfHeight;
       transformHelper.visible = true;
-      container.dataset.transformHandles = editingRotation ? 'rotate' : 'translate';
+      container.dataset.transformHandles = transformLocked ? 'translate-xy' : editingRotation ? 'rotate' : 'translate';
       container.dataset.transformEntity = id ?? '';
       requestRender();
     };
@@ -1276,6 +1284,10 @@ export function TerrainViewport({
     };
   }, [terrain.worldHeight, terrain.worldWidth]);
 
+  const selectedTransformLocked = Boolean(
+    selectedEntityId && entities.some((entity) => entity.id === selectedEntityId && hasLockedAltitudeAndRotation(entity)),
+  );
+
   return (
     <div className="terrain-viewport" ref={containerRef}>
       <div className="viewport-badges" aria-hidden="true">
@@ -1285,7 +1297,7 @@ export function TerrainViewport({
           <span className="placement-preview-badge">PLACEMENT PREVIEW · {placementPreview.length} {placementPreview.length === 1 ? 'UNIT' : 'UNITS'}</span>
         )}
         {mode === 'base' && selectedEntityId && (
-          <span className="transform-preview-badge">HOLD CTRL · {transformMode === 'translate' ? 'XYZ MOVE' : 'PITCH / ROLL / YAW'}</span>
+          <span className="transform-preview-badge">HOLD CTRL · {selectedTransformLocked ? 'XY MOVE · Z + ROTATION LOCKED' : transformMode === 'translate' ? 'XYZ MOVE' : 'PITCH / ROLL / YAW'}</span>
         )}
       </div>
       <div className="viewport-help">

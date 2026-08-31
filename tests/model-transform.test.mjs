@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  constrainEntityTransform,
   entityPositionToScene,
   entityRotationToScene,
+  hasLockedAltitudeAndRotation,
   scenePositionToEntity,
   sceneRotationToEntity,
 } from '../lib/model-transform.ts';
@@ -24,4 +26,24 @@ void test('3D gizmo rotation conversion exposes pitch, roll, and yaw without swa
   const sceneRotation = entityRotationToScene(entityRotation);
   assert.deepEqual(sceneRotation, [-0.25, -1.75, 0.5]);
   assert.deepEqual(sceneRotationToEntity(sceneRotation), entityRotation);
+});
+
+void test('starship transforms preserve absolute Z and every authored rotation axis', () => {
+  const starship = {
+    token: 'h',
+    position: [100, 200, 2575],
+    rotation: [0, 0, 1.570796],
+  };
+  assert.equal(hasLockedAltitudeAndRotation(starship), true);
+  assert.deepEqual(
+    constrainEntityTransform(starship, [350, 450, 12], [0.4, 0.6, 3.14]),
+    { position: [350, 450, 2575], rotation: [0, 0, 1.570796] },
+  );
+
+  const repair = { ...starship, token: 'r' };
+  assert.equal(hasLockedAltitudeAndRotation(repair), false);
+  assert.deepEqual(
+    constrainEntityTransform(repair, [350, 450, 12], [0.4, 0.6, 3.14]),
+    { position: [350, 450, 12], rotation: [0.4, 0.6, 3.14] },
+  );
 });
