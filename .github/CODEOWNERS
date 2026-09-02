@@ -1,0 +1,5 @@
+# Every editor and release change requires approval from a repository admin.
+* @cyberbalsa @0xLogic
+
+# Keep ownership, validation, and release automation under the same review gate.
+/.github/ @cyberbalsa @0xLogic

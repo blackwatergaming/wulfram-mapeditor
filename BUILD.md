@@ -14,7 +14,7 @@ Install dependencies and run the complete verification gate:
 ```powershell
 npm ci
 npm run lint
-npx tsc --noEmit
+npm run typecheck
 npm test
 npm run verify:formats
 npm run build

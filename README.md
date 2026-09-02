@@ -2,6 +2,9 @@
 
 Wulfram Forge is an in-browser terrain editor and base builder for Wulfram II maps. It uses the original palette-decoded terrain textures and shape geometry from the sibling `wulfram-debug` workspace, reads and writes the original `land`/`state` family of files, and adds a versioned JSON base-layout format for new servers.
 
+Community changes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+fork, verification, pull-request, administrator-review, and release workflow.
+
 ## What works
 
 - Full map lifecycle: new map, import, edit, validate, local save/autosave, undo/redo, and ZIP export.
