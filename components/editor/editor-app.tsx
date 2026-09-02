@@ -74,6 +74,7 @@ import {
   type MapSourceFiles,
 } from '@/lib/map-source';
 import { shouldPaintTextureVertex } from '@/lib/terrain-blend';
+import { pinTerrainEdgeHeights } from '@/lib/terrain-edge';
 import {
   CATALOG,
   DEFAULT_VALIDATION,
@@ -814,6 +815,9 @@ export function EditorApp() {
           }
         }
       }
+      if (!painting) {
+        pinTerrainEdgeHeights(terrain.heights, terrain.width, terrain.height);
+      }
       return { ...current, terrain, updatedAt: new Date().toISOString() };
     });
     markDirty('terrain');
@@ -1005,6 +1009,7 @@ export function EditorApp() {
         gamma: heightmapGamma,
         smoothingPasses: heightmapSmoothing,
       });
+      pinTerrainEdgeHeights(heights, canvas.width, canvas.height);
       bitmap.close();
       mutate((draft) => { draft.terrain.heights = heights; });
       setMode('terrain');
@@ -1466,7 +1471,7 @@ export function EditorApp() {
           <DialogHeader>
             <DialogTitle>Import grayscale heightmap</DialogTitle>
             <DialogDescription>
-              Black maps to the minimum height and white maps to the maximum. Use smoothing to soften isolated image spikes before changing the terrain.
+              Black maps to the minimum height and white maps to the maximum. Use smoothing to soften isolated image spikes before changing the terrain. The outer terrain ring stays pinned at zero.
             </DialogDescription>
           </DialogHeader>
           <div className="heightmap-preview">
