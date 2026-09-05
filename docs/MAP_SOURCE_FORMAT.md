@@ -7,7 +7,7 @@ text files:
 
 | File             | Purpose                                                                    | Diff behavior               |
 | ---------------- | -------------------------------------------------------------------------- | --------------------------- |
-| `map.json`       | Name, dimensions, validation settings, and revision timestamp              | Normal formatted JSON       |
+| `map.json`       | Name, dimensions, optional sky, validation settings, and revision timestamp | Normal formatted JSON       |
 | `terrain.tsv`    | `x`, `y`, texture index, and elevation for every vertex                    | One terrain vertex per line |
 | `entities.jsonl` | Original token/subtype, team, transform, active flag, and stable editor ID | One base unit per line      |
 | `base-layouts.json` | All named base states, per-layout validation, and user metadata          | Formatted JSON; one object per layout |
@@ -19,10 +19,23 @@ order is retained because it is also the order used by the original `state`
 writer. `entities.jsonl` is the active-layout compatibility projection;
 `base-layouts.json` is authoritative for every named state. Numeric values retain
 the precision accepted by the original writers.
+
+The `texture` column preserves the original `land` stream alongside each height;
+it is not a texture at that row's vertex coordinate. The client reads the first
+`(width - 1) * (height - 1)` texture values as a packed cell grid with stride
+`width - 1`. Remaining texture values are retained for lossless round trips.
+Composite `tagmap2` entries retain each source and its inverted corner mask.
+
+Optional `terrain.skyName` selects one of the 11 original sky families. Older
+sources without it display `2starset`. Terrain-mode saves include the selection
+in `map.json`; Base Builder saves leave it untouched. Compiled packages include
+a `start_script` containing the selected `sky_names` value and map name. Original
+startup scripts are read for sky selection; unrelated script commands are not
+preserved by the editor.
 The metadata schema is checked in at
 [`public/schemas/wulfram-map-source-v1.schema.json`](../public/schemas/wulfram-map-source-v1.schema.json).
 
-The text source is authoritative. Compiled `land`, `state`, `tagmap`, `tagmap2`,
+The text source is authoritative. Compiled `land`, `state`, `tagmap`, `tagmap2`, `start_script`,
 new-server `base-layout.json`/`base-layouts.json`, and editor backup files are deterministic release
 artifacts and are not committed to the maps repository.
 

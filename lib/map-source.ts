@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { isSkyboxName } from './sky-settings.ts';
 
 import {
   DEFAULT_BASE_LAYOUT_ID,
@@ -61,6 +62,7 @@ export interface MapSourceManifest {
     height: number;
     worldWidth: number;
     worldHeight: number;
+    skyName?: string;
   };
   validation: ValidationSettings;
   updatedAt: string;
@@ -308,6 +310,7 @@ export function createMapSourceFiles(project: WulframProject): CompleteMapSource
       height: canonical.terrain.height,
       worldWidth: canonical.terrain.worldWidth,
       worldHeight: canonical.terrain.worldHeight,
+      ...(canonical.terrain.skyName === undefined ? {} : { skyName: canonical.terrain.skyName }),
     },
     validation: { ...canonical.validation },
     updatedAt: canonical.updatedAt,
@@ -360,6 +363,9 @@ export function parseMapSourceFiles(
     );
   }
   assertRecord(rawManifest.terrain, 'map.json terrain');
+  if (rawManifest.terrain.skyName !== undefined && !isSkyboxName(rawManifest.terrain.skyName)) {
+    throw new Error('terrain.skyName must name an available Wulfram skybox.');
+  }
   const width = integer(rawManifest.terrain.width, 'terrain.width', 2);
   const height = integer(rawManifest.terrain.height, 'terrain.height', 2);
   const worldWidth = finiteNumber(
@@ -459,6 +465,7 @@ export function parseMapSourceFiles(
       height,
       worldWidth,
       worldHeight,
+      ...(rawManifest.terrain.skyName === undefined ? {} : { skyName: rawManifest.terrain.skyName }),
       textureIds,
       heights,
       tagmap: parseSourceLines(files['tagmap.txt']!),

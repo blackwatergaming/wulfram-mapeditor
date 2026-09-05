@@ -1,6 +1,18 @@
 # Wulfram Map Editor — Progress
 
-Updated: 2026-08-30
+Updated: 2026-09-05
+
+## v0.6.0 release candidate — textures, skies, and exploration
+
+- Correct the packed terrain-cell stride, smallest-first bitmap mip decoding, shape UV orientation, and original binary terrain transitions. The user reviewed the updated terrain textures in the running editor.
+- Add all 11 original skies to Terrain settings, with native tile rotations, camera-relative rendering, saved sky metadata, and `start_script` export.
+- Select the red power-cell mesh correctly, resolve all team-material aliases, and render missing neutral cargo/other neutral variants without baked team color. Keep supplied neutral bitmaps unchanged.
+- Open startup in Base Builder with no placement selected; use `backface` checkerboards for new terrain.
+- Add a negative-capable midpoint height control and Below ground grayscale preset. Preserve height differences when shifting the midpoint and keep the outer terrain ring at zero.
+- Verify the supplied `Downloads/render.png` at midpoint −900 / range −1800–0: all 16,129 interior vertices are below ground and all edge vertices are zero.
+- GPU probes match all 98,304 terrain-composite pixels and compile/render all 11 skies. All 352 sky tiles match the original archive pixels. Browser automation is unavailable in this session; the live preview remains at `http://localhost:3000`.
+- Rendering evidence and reproducible probes are recorded in `docs/TEXTURE_RENDERING.md`. Release target: v0.6.0. Either repository admin can complete a release after required CI passes; contributor PRs still require administrator review. The review exception preserves all other `main` protections.
+- Final checks: lint, TypeScript, format verification, production build, and live HTTP asset requests pass. The test suite passes 58 tests with one existing source-path-dependent template test skipped, including round trips for all 47 original maps (782,127 vertices and 1,615 state entities).
 
 ## Completed — multiple base-layout states and 3D transforms
 

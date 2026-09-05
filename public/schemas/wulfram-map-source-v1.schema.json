@@ -25,7 +25,11 @@
         "width": { "type": "integer", "minimum": 2 },
         "height": { "type": "integer", "minimum": 2 },
         "worldWidth": { "type": "number", "exclusiveMinimum": 0 },
-        "worldHeight": { "type": "number", "exclusiveMinimum": 0 }
+        "worldHeight": { "type": "number", "exclusiveMinimum": 0 },
+        "skyName": {
+          "type": "string",
+          "enum": ["2litesky", "2starset", "2starysky", "2weird", "aurora", "bluesky", "bluestar", "rainsky", "stormsky", "sunset", "yellowsky"]
+        }
       }
     },
     "validation": {

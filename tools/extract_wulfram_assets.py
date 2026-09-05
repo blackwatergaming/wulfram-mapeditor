@@ -3,7 +3,7 @@
 
 The source formats were checked against the game's Ghidra project:
 
-* bitmap kind 3 stores every square mip level after a 3-byte header
+* bitmap kind 3 stores square mip levels smallest-first after a 3-byte header
 * model coordinates and UVs are signed 16.16 fixed-point values
 * a shape blob contains a string table followed by two packed model records
 * land files are text heightfields and state files are text entity records
@@ -14,6 +14,7 @@ from ``../wulfram-debug``. Run from the repository root.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -227,13 +228,15 @@ def load_palette() -> list[tuple[int, int, int]]:
 
 
 def decode_bitmap(payload: bytes, palette: list[tuple[int, int, int]], transparent: bool = False) -> Image.Image:
+    if not payload:
+        raise ValueError("empty bitmap")
     kind = payload[0]
     base_kind = kind & 0x7F
     if base_kind == 1:
         if len(payload) < 9:
             raise ValueError("short kind-1 bitmap")
-        _, width, height, reserved = struct.unpack_from("<BHHI", payload)
-        if reserved != 0 or len(payload) < 9 + width * height:
+        _, width, height = struct.unpack_from("<BHH", payload)
+        if not width or not height or len(payload) < 9 + width * height:
             raise ValueError("invalid kind-1 bitmap header")
         pixels = payload[9 : 9 + width * height]
     elif base_kind == 3:
@@ -241,9 +244,13 @@ def decode_bitmap(payload: bytes, palette: list[tuple[int, int, int]], transpare
             raise ValueError("short kind-3 bitmap")
         exponent = struct.unpack_from("<H", payload, 1)[0]
         width = height = 1 << exponent
-        if len(payload) < 3 + width * height:
+        # Tex_SerializeToStream (0x498370) writes the entire mip block. The
+        # full-size level follows 1x1, 2x2, ..., (width/2)x(height/2), as used by
+        # TexCache_CreateChunkFromBitmap (0x497ed0) and the mip offset table.
+        offset = 3 + (width * height - 1) // 3
+        if len(payload) < offset + width * height:
             raise ValueError("short kind-3 top mip")
-        pixels = payload[3 : 3 + width * height]
+        pixels = payload[offset : offset + width * height]
     else:
         raise ValueError(f"unsupported bitmap kind {kind}")
 
@@ -358,7 +365,115 @@ def extract_terrain_textures(palette: list[tuple[int, int, int]]) -> dict[str, d
                 "height": image.height,
                 "average": average_color(image),
             }
+    # Shipped maps also place building, wall, and other base/sky art on terrain.
+    required = {"backface"}
+    for tagmap in MAPS_ROOT.rglob("tagmap2"):
+        for line in tagmap.read_text(encoding="cp1252").splitlines():
+            if line.startswith("+"):
+                required.update(line[1:].split()[1::3])
+            elif line.strip():
+                required.add(line.strip())
+    for archive_path in sorted((SOURCE / "data" / "bitmaps").glob("*.zip")):
+        with zipfile.ZipFile(archive_path) as archive:
+            for name in sorted(required.intersection(archive.namelist()) - manifest.keys()):
+                image = decode_bitmap(archive.read(name), palette)
+                filename = safe_name(name) + ".png"
+                image.save(destination / filename, optimize=True)
+                manifest[name] = {
+                    "url": f"/assets/textures/terrain/{filename}",
+                    "width": image.width,
+                    "height": image.height,
+                    "average": average_color(image),
+                }
+    for name in sorted(required - manifest.keys()):
+        print(f"warning: terrain bitmap {name!r} is unavailable", file=sys.stderr)
     return manifest
+
+
+def extract_terrain_masks() -> dict[str, dict]:
+    """Decode the source mask bytes, not palette colors (0x49c7d0)."""
+    destination = PUBLIC / "textures" / "masks"
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest = {}
+    with zipfile.ZipFile(BASE_ARCHIVE) as archive:
+        for family in range(1, 5):
+            for frame in range(1, 15):
+                name = f"{family}template{frame:03d}"
+                image = decode_bitmap(archive.read(name), [(i, i, i) for i in range(256)])
+                filename = name + ".png"
+                image.save(destination / filename, optimize=True)
+                manifest[name] = {"url": f"/assets/textures/masks/{filename}",
+                                  "width": image.width, "height": image.height,
+                                  "average": average_color(image)}
+    return manifest
+
+
+def extract_skyboxes(palette: list[tuple[int, int, int]]) -> dict[str, dict]:
+    """Keep all 32 original tiles per sky in an atlas with one-pixel gutters."""
+    destination = PUBLIC / "textures" / "skies"
+    destination.mkdir(parents=True, exist_ok=True)
+    labels = {
+        "2litesky": "Light sky", "2starset": "Starset", "2starysky": "Starry sky",
+        "2weird": "Weird", "aurora": "Aurora", "bluesky": "Blue sky",
+        "bluestar": "Blue star", "rainsky": "Rain sky", "stormsky": "Storm sky",
+        "sunset": "Sunset", "yellowsky": "Yellow sky",
+    }
+    manifest = {}
+    with zipfile.ZipFile(SOURCE / "data" / "bitmaps" / "skies.zip") as archive:
+        for name, label in labels.items():
+            atlas = Image.new("RGBA", (520, 1040))
+            horizon = Image.new("RGBA", (128, 16))
+            for index in range(32):
+                tile = decode_bitmap(archive.read(f"{name}{index + 1:03d}"), palette)
+                if tile.size != (128, 128):
+                    raise ValueError(f"Unexpected sky tile size: {name}{index + 1:03d}")
+                x, y = (index % 4) * 130, (index // 4) * 130
+                # Duplicate border texels so bilinear sampling never reaches another tile.
+                atlas.paste(tile, (x + 1, y + 1))
+                atlas.paste(tile.crop((0, 0, 128, 1)), (x + 1, y))
+                atlas.paste(tile.crop((0, 127, 128, 128)), (x + 1, y + 129))
+                atlas.paste(atlas.crop((x + 1, y, x + 2, y + 130)), (x, y))
+                atlas.paste(atlas.crop((x + 128, y, x + 129, y + 130)), (x + 129, y))
+                if index < 16:
+                    rotation = (2, 1, 0, 3)[index // 4]
+                    for pixel in range(128):
+                        uv = ((pixel, 127), (127, pixel), (pixel, 0), (0, pixel))[rotation]
+                        horizon.putpixel((pixel, index), tile.getpixel(uv))
+            filename = safe_name(name) + ".png"
+            atlas.save(destination / filename, optimize=True)
+            manifest[name] = {
+                "label": label, "url": f"/assets/textures/skies/{filename}",
+                "width": atlas.width, "height": atlas.height,
+                "average": average_color(atlas), "horizon": average_color(horizon),
+            }
+    return manifest
+
+
+def extract_model_materials(required_materials: set[str], palette: list[tuple[int, int, int]]):
+    destination = PUBLIC / "textures" / "materials"
+    destination.mkdir(parents=True, exist_ok=True)
+    required_materials = set(required_materials)
+    materials = {}
+    with zipfile.ZipFile(BASE_ARCHIVE) as archive:
+        available = set(archive.namelist())
+        for name in list(required_materials):
+            variants = TEAM_MATERIAL_BY_NAME.get(name)
+            if variants:
+                required_materials.update(candidate for candidate in variants.values() if candidate in available)
+        for name in sorted(required_materials, key=str.casefold):
+            if name not in available:
+                print(f"warning: material bitmap {name!r} is unavailable", file=sys.stderr)
+                continue
+            image = decode_bitmap(archive.read(name), palette)
+            filename = safe_name(name) + ".png"
+            image.save(destination / filename, optimize=True)
+            materials[name] = {
+                "url": f"/assets/textures/materials/{filename}",
+                "width": image.width, "height": image.height, "average": average_color(image),
+            }
+    # Every available member must resolve, including shapes already using red/gray art.
+    variants = {name: row for name, row in TEAM_MATERIAL_BY_NAME.items() if name in materials}
+    return materials, variants
 
 
 def extract_models(
@@ -388,32 +503,7 @@ def extract_models(
             }
             write_json(model_destination / filename, model, compact=True)
 
-    materials = {}
-    with zipfile.ZipFile(BASE_ARCHIVE) as archive:
-        available = set(archive.namelist())
-        source_materials = set(required_materials)
-        for name in source_materials:
-            variants = TEAM_MATERIAL_BY_NAME.get(name)
-            if variants:
-                required_materials.update(candidate for candidate in variants.values() if candidate in available)
-        for name in sorted(required_materials, key=str.casefold):
-            if name not in available:
-                print(f"warning: material bitmap {name!r} is unavailable", file=sys.stderr)
-                continue
-            image = decode_bitmap(archive.read(name), palette)
-            filename = safe_name(name) + ".png"
-            image.save(material_destination / filename, optimize=True)
-            materials[name] = {
-                "url": f"/assets/textures/materials/{filename}",
-                "width": image.width,
-                "height": image.height,
-                "average": average_color(image),
-            }
-    material_variants = {
-        name: variants
-        for name, variants in TEAM_MATERIAL_BY_NAME.items()
-        if name in source_materials
-    }
+    materials, material_variants = extract_model_materials(required_materials, palette)
     return models, materials, material_variants
 
 
@@ -806,7 +896,7 @@ def copy_demo_map() -> dict:
     destination = PUBLIC / "demo" / "crossroads"
     destination.mkdir(parents=True, exist_ok=True)
     copied = []
-    for name in ("land", "state", "tagmap", "tagmap2"):
+    for name in ("land", "state", "tagmap", "tagmap2", "start_script"):
         candidate = source / name
         if candidate.exists():
             shutil.copy2(candidate, destination / name)
@@ -815,12 +905,40 @@ def copy_demo_map() -> dict:
 
 
 def main() -> None:
+    global SOURCE, PALETTE_PATH, LANDSCAPE_ARCHIVE, BASE_ARCHIVE, SHAPES_ARCHIVE, MAPS_ROOT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=SOURCE, help="Wulfram installation or resource checkout")
+    parser.add_argument("--textures-only", action="store_true", help="Regenerate texture assets without changing models or maps")
+    args = parser.parse_args()
+    SOURCE = args.source.resolve()
+    PALETTE_PATH = SOURCE / "data" / "palette0"
+    LANDSCAPE_ARCHIVE = SOURCE / "data" / "bitmaps" / "landscape.zip"
+    BASE_ARCHIVE = SOURCE / "data" / "bitmaps" / "base.zip"
+    SHAPES_ARCHIVE = SOURCE / "data" / "shapes.zip"
+    MAPS_ROOT = SOURCE / "data" / "maps"
     for required in (PALETTE_PATH, LANDSCAPE_ARCHIVE, BASE_ARCHIVE, SHAPES_ARCHIVE, MAPS_ROOT):
         if not required.exists():
             raise SystemExit(f"Required Wulfram source asset is missing: {required}")
 
     palette = load_palette()
     texture_manifest = extract_terrain_textures(palette)
+    mask_manifest = extract_terrain_masks()
+    sky_manifest = extract_skyboxes(palette)
+    if args.textures_only:
+        manifest = json.loads((PUBLIC / "manifest.json").read_text(encoding="utf-8"))
+        required_materials = set()
+        for asset in manifest["models"].values():
+            model = json.loads((ROOT / "public" / asset["url"].lstrip("/")).read_text(encoding="utf-8"))
+            required_materials.update(model["materials"])
+        manifest["materials"], manifest["materialVariants"] = extract_model_materials(required_materials, palette)
+        manifest["terrainTextures"] = texture_manifest
+        manifest["terrainMasks"] = mask_manifest
+        manifest["skyboxes"] = sky_manifest
+        manifest["provenance"]["textureConversion"] = "Smallest-first mip chain; original full-resolution pixels and binary transition masks"
+        manifest["provenance"]["skyArchive"] = "data/bitmaps/skies.zip"
+        write_json(PUBLIC / "manifest.json", manifest, compact=True)
+        print(f"Extracted {len(texture_manifest)} terrain textures, {len(manifest['materials'])} model materials, {len(mask_manifest)} masks, and {len(sky_manifest)} skies.")
+        return
     model_manifest, material_manifest, material_variants = extract_models(palette)
     analysis = analyze_maps()
     base_templates = extract_base_templates()
@@ -840,6 +958,8 @@ def main() -> None:
             "conversion": "Palette decode and 16.16 fixed-point model unpacking only",
         },
         "terrainTextures": texture_manifest,
+        "terrainMasks": mask_manifest,
+        "skyboxes": sky_manifest,
         "materials": material_manifest,
         "materialVariants": material_variants,
         "models": model_manifest,

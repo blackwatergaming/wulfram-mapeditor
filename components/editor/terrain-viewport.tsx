@@ -14,9 +14,12 @@ import {
   sceneRotationToEntity,
 } from '@/lib/model-transform';
 import type { TerrainBrushShape } from '@/lib/terrain-brush';
-import { textureBlendWeights } from '@/lib/terrain-blend';
+import { createTerrainMaterial } from '@/lib/terrain-material';
+import { createUnitMaterial } from '@/lib/unit-material';
+import { createSkybox } from '@/lib/skybox';
+import { resolveSkyboxName } from '@/lib/sky-settings';
 import type { AssetManifest, ShapeModel, StateEntity, TerrainData } from '@/lib/wulfram';
-import { MODEL_WORLD_SCALE, catalogFor, materialNameForTeam, modelNameFor, resolveTextureName, sampleHeight } from '@/lib/wulfram';
+import { MODEL_WORLD_SCALE, catalogFor, modelNameFor, sampleHeight } from '@/lib/wulfram';
 
 export type EditorMode = 'terrain' | 'base';
 export type TerrainTool = 'sculpt' | 'lower' | 'level' | 'smooth' | 'paint' | 'stamp';
@@ -31,7 +34,6 @@ interface TerrainViewportProps {
   terrainTool: TerrainTool;
   brushRadius: number;
   brushShape: TerrainBrushShape;
-  textureBlend: number;
   placementPreview: StateEntity[];
   placementPreviewAnchor?: [number, number];
   selectedEntityId?: string;
@@ -51,14 +53,7 @@ interface TerrainViewportProps {
 
 const shapeCache = new Map<string, Promise<ShapeModel>>();
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
-const texturePixelCache = new Map<string, Promise<TexturePixels>>();
 const materialTextureCache = new Map<string, THREE.Texture>();
-
-interface TexturePixels {
-  width: number;
-  height: number;
-  data: Uint8ClampedArray;
-}
 
 function loadShape(url: string): Promise<ShapeModel> {
   let pending = shapeCache.get(url);
@@ -86,13 +81,6 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return pending;
 }
 
-function colorChannels(color: string): [number, number, number] {
-  const match = color.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
-  return match
-    ? [Number.parseInt(match[1], 16), Number.parseInt(match[2], 16), Number.parseInt(match[3], 16)]
-    : [91, 70, 56];
-}
-
 function brushOutlineGeometry(shape: TerrainBrushShape): THREE.RingGeometry {
   if (shape === 'square') {
     const cornerRadius = Math.SQRT2;
@@ -100,27 +88,6 @@ function brushOutlineGeometry(shape: TerrainBrushShape): THREE.RingGeometry {
   }
   if (shape === 'diamond') return new THREE.RingGeometry(0.92, 1, 4);
   return new THREE.RingGeometry(0.92, 1, 64);
-}
-
-function loadTexturePixels(url: string): Promise<TexturePixels> {
-  let pending = texturePixelCache.get(url);
-  if (!pending) {
-    pending = loadImage(url).then((image) => {
-      const source = document.createElement('canvas');
-      source.width = image.naturalWidth || image.width;
-      source.height = image.naturalHeight || image.height;
-      const context = source.getContext('2d', { willReadFrequently: true });
-      if (!context) throw new Error('Canvas texture decoding is unavailable.');
-      context.drawImage(image, 0, 0);
-      return {
-        width: source.width,
-        height: source.height,
-        data: context.getImageData(0, 0, source.width, source.height).data,
-      };
-    });
-    texturePixelCache.set(url, pending);
-  }
-  return pending;
 }
 
 function disposeTree(root: THREE.Object3D) {
@@ -180,125 +147,13 @@ function updateTerrainHeights(geometry: THREE.BufferGeometry, terrain: TerrainDa
   geometry.computeBoundingSphere();
 }
 
-function terrainTextureDimensions(terrain: TerrainData) {
-  const tile = Math.max(2, Math.min(7, Math.floor(896 / Math.max(terrain.width, terrain.height))));
-  return { tile, width: terrain.width * tile, height: terrain.height * tile };
-}
-
-async function paintTerrainCanvas(
-  canvas: HTMLCanvasElement,
-  terrain: TerrainData,
-  manifest: AssetManifest,
-  texture: THREE.CanvasTexture,
-  blendStrength: number,
-  cancelled: () => boolean,
-  invalidate: () => void,
-) {
-  const dimensions = terrainTextureDimensions(terrain);
-  if (canvas.width !== dimensions.width) canvas.width = dimensions.width;
-  if (canvas.height !== dimensions.height) canvas.height = dimensions.height;
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) return;
-  const { tile } = dimensions;
-  context.imageSmoothingEnabled = false;
-
-  const names = terrain.tagmap2.map((line) => resolveTextureName(line, manifest.terrainTextures));
-  for (let y = 0; y < terrain.height; y += 1) {
-    for (let x = 0; x < terrain.width; x += 1) {
-      const id = terrain.textureIds[y * terrain.width + x] ?? 0;
-      const asset = names[id] ? manifest.terrainTextures[names[id]!] : undefined;
-      context.fillStyle = asset?.average ?? '#5b4638';
-      context.fillRect(x * tile, y * tile, tile, tile);
-    }
-  }
-  texture.needsUpdate = true;
-  invalidate();
-
-  const used = new Set(terrain.textureIds.map((id) => names[id]).filter(Boolean) as string[]);
-  const loaded = new Map<number, TexturePixels>();
-  await Promise.all([...used].map(async (name) => {
-    const asset = manifest.terrainTextures[name];
-    if (!asset) return;
-    try {
-      for (let id = 0; id < names.length; id += 1) {
-        if (names[id] === name) loaded.set(id, await loadTexturePixels(asset.url));
-      }
-    } catch {
-      // The average-color base remains a valid preview if one source bitmap fails.
-    }
-  }));
-  if (cancelled()) return;
-  const output = context.createImageData(canvas.width, canvas.height);
-  const softness = Math.max(0, Math.min(1, blendStrength / 100));
-  const repeatPixels = Math.max(24, tile * 5);
-  const fallbackById = new Map<number, [number, number, number]>();
-  for (const id of new Set(terrain.textureIds)) {
-    const asset = names[id] ? manifest.terrainTextures[names[id]!] : undefined;
-    fallbackById.set(id, colorChannels(asset?.average ?? '#5b4638'));
-  }
-  const maximumGridX = terrain.width - 1;
-  const maximumGridY = terrain.height - 1;
-  const ids: [number, number, number, number] = [0, 0, 0, 0];
-  const weights: [number, number, number, number] = [0, 0, 0, 0];
-  for (let pixelY = 0; pixelY < canvas.height; pixelY += 1) {
-    const gridY = pixelY / Math.max(1, canvas.height - 1) * maximumGridY;
-    const y0 = Math.min(maximumGridY, Math.floor(gridY));
-    const y1 = Math.min(maximumGridY, y0 + 1);
-    const fractionY = gridY - y0;
-    for (let pixelX = 0; pixelX < canvas.width; pixelX += 1) {
-      const gridX = pixelX / Math.max(1, canvas.width - 1) * maximumGridX;
-      const x0 = Math.min(maximumGridX, Math.floor(gridX));
-      const x1 = Math.min(maximumGridX, x0 + 1);
-      const fractionX = gridX - x0;
-      ids[0] = terrain.textureIds[y0 * terrain.width + x0] ?? 0;
-      ids[1] = terrain.textureIds[y0 * terrain.width + x1] ?? 0;
-      ids[2] = terrain.textureIds[y1 * terrain.width + x0] ?? 0;
-      ids[3] = terrain.textureIds[y1 * terrain.width + x1] ?? 0;
-      textureBlendWeights(fractionX, fractionY, softness, ((x0 ^ y0) & 1) === 1, weights);
-      let red = 0;
-      let green = 0;
-      let blue = 0;
-      for (let corner = 0; corner < 4; corner += 1) {
-        const weight = weights[corner];
-        if (!weight) continue;
-        const textureId = ids[corner];
-        const pixels = loaded.get(textureId);
-        if (pixels) {
-          const sourceX = Math.floor(pixelX % repeatPixels / repeatPixels * pixels.width) % pixels.width;
-          const sourceY = Math.floor(pixelY % repeatPixels / repeatPixels * pixels.height) % pixels.height;
-          const sourceIndex = (sourceY * pixels.width + sourceX) * 4;
-          red += pixels.data[sourceIndex] * weight;
-          green += pixels.data[sourceIndex + 1] * weight;
-          blue += pixels.data[sourceIndex + 2] * weight;
-        } else {
-          const fallback = fallbackById.get(textureId) ?? [91, 70, 56];
-          red += fallback[0] * weight;
-          green += fallback[1] * weight;
-          blue += fallback[2] * weight;
-        }
-      }
-      const outputIndex = (pixelY * canvas.width + pixelX) * 4;
-      output.data[outputIndex] = red;
-      output.data[outputIndex + 1] = green;
-      output.data[outputIndex + 2] = blue;
-      output.data[outputIndex + 3] = 255;
-    }
-    if (pixelY % 48 === 47) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      if (cancelled()) return;
-    }
-  }
-  if (cancelled()) return;
-  context.putImageData(output, 0, 0);
-  texture.needsUpdate = true;
-  invalidate();
-}
-
 function materialTexture(url: string, invalidate: () => void): THREE.Texture {
   const cached = materialTextureCache.get(url);
   if (cached) return cached;
   const texture = new THREE.TextureLoader().load(url, invalidate);
   texture.colorSpace = THREE.SRGBColorSpace;
+  // Shape UVs are passed directly to D3D; v=0 addresses the first stored row.
+  texture.flipY = false;
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestMipmapLinearFilter;
@@ -409,16 +264,8 @@ async function originalUnit(
     if (part.uvs.length) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(part.uvs, 2));
     geometry.computeVertexNormals();
     const sourceMaterialName = shape.materials[part.materialIndex];
-    const materialName = materialNameForTeam(sourceMaterialName, entity.team, manifest);
-    const materialAsset = manifest.materials[materialName];
-    const material = new THREE.MeshStandardMaterial({
-      color: materialAsset ? (entity.team === 0 ? 0xb8b8b8 : 0xffffff) : entity.team === 0 ? 0x9ca3a6 : entity.team === 2 ? 0x688fcb : 0xc56b4c,
-      roughness: 0.72,
-      metalness: 0.2,
-    });
-    if (materialAsset) {
-      material.map = materialTexture(materialAsset.url, invalidate);
-    }
+    const material = createUnitMaterial(sourceMaterialName, entity.team, manifest,
+      (url) => materialTexture(url, invalidate));
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -435,7 +282,6 @@ export function TerrainViewport({
   terrainTool,
   brushRadius,
   brushShape,
-  textureBlend,
   placementPreview,
   placementPreviewAnchor,
   selectedEntityId,
@@ -467,8 +313,7 @@ export function TerrainViewport({
   const placementPreviewRef = useRef(placementPreview);
   const placementPreviewAnchorRef = useRef(placementPreviewAnchor);
   const terrainMeshRef = useRef<THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | null>(null);
-  const terrainCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const terrainTextureRef = useRef<THREE.CanvasTexture | null>(null);
+  const terrainMaterialRef = useRef<ReturnType<typeof createTerrainMaterial> | null>(null);
   const gridRef = useRef<THREE.Mesh | null>(null);
   const brushRef = useRef<THREE.Mesh | null>(null);
   const invalidateRef = useRef<(updateShadows?: boolean) => void>(() => undefined);
@@ -485,6 +330,7 @@ export function TerrainViewport({
     () => placementPreview.map((entity) => `${entity.id}:${entity.token}:${entity.subtype ?? ''}:${entity.team}`).join('|'),
     [placementPreview],
   );
+  const skyAsset = manifest.skyboxes?.[resolveSkyboxName(terrain.skyName)];
 
   useEffect(() => {
     entitiesRef.current = entities;
@@ -820,42 +666,45 @@ export function TerrainViewport({
   }, []);
 
   useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !skyAsset) return;
+    scene.background = new THREE.Color(skyAsset.horizon);
+    scene.fog?.color.set(skyAsset.horizon);
+    const sky = createSkybox(skyAsset, terrain.worldWidth, terrain.worldHeight, loadImage, () => invalidateRef.current());
+    scene.add(sky.mesh);
+    invalidateRef.current();
+    return () => {
+      scene.remove(sky.mesh);
+      sky.dispose();
+    };
+  }, [skyAsset, terrain.worldHeight, terrain.worldWidth]);
+
+  useEffect(() => {
     const root = terrainRootRef.current;
     const currentTerrain = terrainRef.current;
-    terrainTextureRef.current?.dispose();
+    terrainMaterialRef.current?.dispose();
     disposeTree(root);
     const scale = 160 / Math.max(currentTerrain.worldWidth, currentTerrain.worldHeight);
     scaleRef.current = scale;
     const geometry = terrainGeometry(currentTerrain, scale);
-    const canvas = document.createElement('canvas');
-    const textureDimensions = terrainTextureDimensions(currentTerrain);
-    canvas.width = textureDimensions.width;
-    canvas.height = textureDimensions.height;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.generateMipmaps = false;
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    const material = new THREE.MeshStandardMaterial({ map: texture, color: 0xffffff, roughness: 0.96, metalness: 0 });
+    const terrainMaterial = createTerrainMaterial(currentTerrain, manifest, loadImage, () => invalidateRef.current());
+    const material = terrainMaterial.material;
     const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
     mesh.userData.terrain = true;
     root.add(mesh);
     terrainMeshRef.current = mesh;
-    terrainCanvasRef.current = canvas;
-    terrainTextureRef.current = texture;
+    terrainMaterialRef.current = terrainMaterial;
     invalidateRef.current(true);
     return () => {
       if (terrainMeshRef.current === mesh) {
         terrainMeshRef.current = null;
-        terrainCanvasRef.current = null;
-        terrainTextureRef.current = null;
+        terrainMaterialRef.current = null;
       }
-      texture.dispose();
+      terrainMaterial.dispose();
       disposeTree(root);
     };
-  }, [terrain.height, terrain.width, terrain.worldHeight, terrain.worldWidth]);
+  }, [manifest, terrain.height, terrain.width, terrain.worldHeight, terrain.worldWidth]);
 
   useEffect(() => {
     const mesh = terrainMeshRef.current;
@@ -894,27 +743,12 @@ export function TerrainViewport({
   }, [showGrid, terrain.height, terrain.width, terrain.worldHeight, terrain.worldWidth]);
 
   useEffect(() => {
-    const canvas = terrainCanvasRef.current;
-    const texture = terrainTextureRef.current;
-    if (!canvas || !texture) return;
-    const currentTerrain = terrainRef.current;
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void paintTerrainCanvas(
-        canvas,
-        currentTerrain,
-        manifest,
-        texture,
-        textureBlend,
-        () => cancelled,
-        () => invalidateRef.current(),
-      );
-    }, 42);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [manifest, terrain.height, terrain.tagmap2, terrain.textureIds, terrain.width, textureBlend]);
+    const material = terrainMaterialRef.current;
+    if (!material) return;
+    void material.update(terrainRef.current).catch((error: unknown) => {
+      console.error('Terrain texture loading failed:', error);
+    });
+  }, [manifest, terrain.height, terrain.tagmap2, terrain.textureIds, terrain.width, terrain.worldHeight, terrain.worldWidth]);
 
   useEffect(() => {
     const root = entityRootRef.current;

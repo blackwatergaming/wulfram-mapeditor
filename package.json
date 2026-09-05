@@ -1,6 +1,6 @@
 {
   "name": "wulfram-mapeditor",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -16,7 +16,7 @@
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/base-layout.test.mjs tests/base-template.test.mjs tests/camera-controls.test.mjs tests/heightmap.test.mjs tests/map-repository.test.mjs tests/model-transform.test.mjs tests/og-map-roundtrip.test.mjs tests/terrain-blend.test.mjs tests/terrain-brush.test.mjs",
+    "test": "node --experimental-strip-types --test tests/base-layout.test.mjs tests/base-template.test.mjs tests/camera-controls.test.mjs tests/heightmap.test.mjs tests/map-repository.test.mjs tests/model-transform.test.mjs tests/og-map-roundtrip.test.mjs tests/skybox.test.mjs tests/terrain-blend.test.mjs tests/terrain-brush.test.mjs tests/terrain-textures.test.mjs tests/unit-material.test.mjs",
     "test:og-maps": "node --experimental-strip-types --test tests/og-map-roundtrip.test.mjs",
     "verify:formats": "node --experimental-strip-types tools/verify-formats.mjs",
     "maps:list": "node --experimental-strip-types tools/maps-cli.mjs list",

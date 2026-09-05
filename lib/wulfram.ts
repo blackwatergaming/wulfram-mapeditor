@@ -5,6 +5,9 @@ export interface TerrainData {
   height: number;
   worldWidth: number;
   worldHeight: number;
+  /** Original sky family, shared by all base layouts on this terrain. */
+  skyName?: string;
+  /** Packed cell IDs use width - 1 as stride; trailing land-row values are retained for round trips. */
   textureIds: number[];
   heights: number[];
   tagmap: string[];
@@ -75,6 +78,8 @@ export interface ModelAsset {
 export interface AssetManifest {
   provenance: Record<string, string>;
   terrainTextures: Record<string, TextureAsset>;
+  terrainMasks?: Record<string, TextureAsset>;
+  skyboxes?: Record<string, TextureAsset & { label: string; horizon: string }>;
   materials: Record<string, TextureAsset>;
   materialVariants: Record<string, TeamMaterialVariant>;
   models: Record<string, ModelAsset>;
@@ -357,8 +362,8 @@ export function createBlankProject(name = 'Untitled map', size = 129): WulframPr
       worldHeight: 5600,
       textureIds: Array.from({ length: count }, () => 0),
       heights: Array.from({ length: count }, () => 0),
-      tagmap: ['0:10martian001'],
-      tagmap2: ['10martian001'],
+      tagmap: ['0:backface'],
+      tagmap2: ['backface'],
     },
     entities: [],
     validation: { ...DEFAULT_VALIDATION },
@@ -717,7 +722,8 @@ export function catalogFor(entity: StateEntity): CatalogItem | undefined {
 export function modelNameFor(entity: Pick<StateEntity, 'token' | 'team'>): string | undefined {
   const team = entity.team === 2 ? 2 : 1;
   const models: Record<string, string> = {
-    e: `energy_${team}`,
+    // The archived power-cell meshes are numbered blue=1, red=2.
+    e: entity.team === 1 ? 'energy_2' : 'energy_1',
     f: `refuel_${team}`,
     r: `repair_${team}`,
     s: `flak_turret_${team}`,

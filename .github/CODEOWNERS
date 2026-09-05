@@ -1,4 +1,5 @@
-# Every editor and release change requires approval from a repository admin.
+# Contributor changes require approval from a repository admin.
+# Admins may complete their own validated release PR under the review exception.
 * @cyberbalsa @0xLogic
 
 # Keep ownership, validation, and release automation under the same review gate.
