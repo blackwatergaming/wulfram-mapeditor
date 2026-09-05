@@ -9,6 +9,7 @@ import {
   type WulframProject,
 } from './wulfram.ts';
 import { serializeBaseLayoutCollection } from './map-source.ts';
+import { resolveSkyboxName } from './sky-settings.ts';
 
 const ARCHIVE_DATE = new Date('2000-01-01T00:00:00.000Z');
 
@@ -17,6 +18,7 @@ export const MAP_ARCHIVE_FILES = [
   'state',
   'tagmap',
   'tagmap2',
+  'start_script',
   'base-layout.json',
   'base-layouts.json',
   'wulfram-project.json',
@@ -38,6 +40,7 @@ export function createMapArchiveFiles(project: WulframProject): Record<(typeof M
     state: serializeState(canonical.entities),
     tagmap: serializeLines(canonical.terrain.tagmap),
     tagmap2: serializeLines(canonical.terrain.tagmap2),
+    start_script: `sky_names "${resolveSkyboxName(canonical.terrain.skyName)}"\nmap_name "${canonical.name.replace(/[\\"\r\n]/g, ' ')}"\n`,
     'base-layout.json': `${JSON.stringify(toBaseLayout(canonical), null, 2)}\n`,
     'base-layouts.json': serializeBaseLayoutCollection(canonical),
     'wulfram-project.json': `${JSON.stringify(canonical)}\n`,

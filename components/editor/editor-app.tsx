@@ -43,7 +43,7 @@ import {
 import { BaseTemplatePreview } from '@/components/editor/base-template-preview';
 import { TerrainViewport, type EditorMode, type ModelTransformMode, type StrokePhase, type TerrainTool } from '@/components/editor/terrain-viewport';
 import { createMapArchive, readMapArchive, safeMapName } from '@/lib/map-package';
-import { heightsFromGrayscaleRgba } from '@/lib/heightmap';
+import { heightmapMidpointHeight, heightsFromGrayscaleRgba, recenterHeightmapRange } from '@/lib/heightmap';
 import { constrainEntityTransform, hasLockedAltitudeAndRotation } from '@/lib/model-transform';
 import {
   terrainBrushMix,
@@ -74,6 +74,8 @@ import {
   type MapSourceFiles,
 } from '@/lib/map-source';
 import { shouldPaintTextureVertex } from '@/lib/terrain-blend';
+import { paintTerrainTextureVertex } from '@/lib/terrain-textures';
+import { resolveSkyboxName, skyboxFromStartScript } from '@/lib/sky-settings';
 import { pinTerrainEdgeHeights } from '@/lib/terrain-edge';
 import {
   CATALOG,
@@ -209,6 +211,8 @@ function NumberField({
   max?: number;
   disabled?: boolean;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = Number.isFinite(value) ? String(Number(value.toFixed(4))) : '0';
   return (
     <label className="number-field">
       <span>{label}</span>
@@ -216,13 +220,16 @@ function NumberField({
         disabled={disabled}
         max={max}
         min={min}
+        onBlur={() => setDraft(null)}
+        onFocus={() => setDraft(displayedValue)}
         onChange={(event) => {
-          const next = Number(event.target.value);
+          setDraft(event.target.value);
+          const next = event.target.valueAsNumber;
           if (Number.isFinite(next)) onChange(next);
         }}
         step={step}
         type="number"
-        value={Number.isFinite(value) ? Number(value.toFixed(4)) : 0}
+        value={draft ?? displayedValue}
       />
     </label>
   );
@@ -258,7 +265,7 @@ export function EditorApp() {
   const [analysis, setAnalysis] = useState<MapAnalysis>();
   const [baseTemplates, setBaseTemplates] = useState<BaseTemplateLibrary>();
   const [project, setProject] = useState<WulframProject>();
-  const [mode, setMode] = useState<EditorMode>('terrain');
+  const [mode, setMode] = useState<EditorMode>('base');
   const [terrainTool, setTerrainTool] = useState<TerrainTool>('sculpt');
   const [brushRadius, setBrushRadius] = useState(165);
   const [brushStrength, setBrushStrength] = useState(32);
@@ -266,13 +273,12 @@ export function EditorApp() {
   const [brushFalloff, setBrushFalloff] = useState<TerrainBrushFalloff>('soft');
   const [terrainTargetHeight, setTerrainTargetHeight] = useState(0);
   const [lastTerrainHeight, setLastTerrainHeight] = useState<number>();
-  const [textureBlend, setTextureBlend] = useState(72);
   const [selectedTexture, setSelectedTexture] = useState('canyon003');
   const [textureSearch, setTextureSearch] = useState('');
   const [texturePage, setTexturePage] = useState(0);
   const [team, setTeam] = useState(1);
   const [placementHeight, setPlacementHeight] = useState(STRUCTURE_BOTTOM_MARGIN);
-  const [selectedPlacementKey, setSelectedPlacementKey] = useState('power');
+  const [selectedPlacementKey, setSelectedPlacementKey] = useState('');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>();
   const [templateScale, setTemplateScale] = useState(1);
   const [templateYaw, setTemplateYaw] = useState(0);
@@ -345,7 +351,7 @@ export function EditorApp() {
     async function load() {
       try {
         const [assetsResponse, analysisResponse, templatesResponse] = await Promise.all([
-          fetch('/assets/manifest.json'),
+          fetch('/assets/manifest.json', { cache: 'no-cache' }),
           fetch('/assets/map-analysis.json'),
           fetch('/assets/base-templates.json'),
         ]);
@@ -376,15 +382,17 @@ export function EditorApp() {
         }
 
         const base = assets.demo.baseUrl;
-        const [land, state, tagmap, tagmap2] = await Promise.all([
+        const [land, state, tagmap, tagmap2, startScript] = await Promise.all([
           fetch(`${base}/land`).then((response) => response.text()),
           fetch(`${base}/state`).then((response) => response.text()),
           fetch(`${base}/tagmap`).then((response) => response.text()),
           fetch(`${base}/tagmap2`).then((response) => response.text()),
+          fetch(`${base}/start_script`).then((response) => response.ok ? response.text() : ''),
         ]);
         const terrain = parseLand(land);
         terrain.tagmap = parseLines(tagmap);
         terrain.tagmap2 = parseLines(tagmap2);
+        terrain.skyName = skyboxFromStartScript(startScript);
         const entities = parseState(state);
         const updatedAt = new Date().toISOString();
         const validation = {
@@ -775,6 +783,7 @@ export function EditorApp() {
       const minY = Math.max(0, Math.floor((worldY - brushRadius) / cellY));
       const maxY = Math.min(terrain.height - 1, Math.ceil((worldY + brushRadius) / cellY));
       const textureId = terrainTool === 'paint' ? ensureTextureTag(terrain, selectedTexture) : -1;
+      const textureTags = painting ? new Map(terrain.tagmap2.map((tag, id) => [tag.trim(), id])) : undefined;
       for (let y = minY; y <= maxY; y += 1) {
         for (let x = minX; x <= maxX; x += 1) {
           const px = x / (terrain.width - 1) * terrain.worldWidth;
@@ -789,7 +798,9 @@ export function EditorApp() {
           if (falloff <= 0) continue;
           const index = y * terrain.width + x;
           if (terrainTool === 'paint') {
-            if (shouldPaintTextureVertex(x, y, textureId, falloff, brushStrength)) terrain.textureIds[index] = textureId;
+            if (shouldPaintTextureVertex(x, y, textureId, falloff, brushStrength)) {
+              paintTerrainTextureVertex(terrain, x, y, selectedTexture, textureTags);
+            }
           } else if (terrainTool === 'sculpt' || terrainTool === 'lower') {
             const direction = terrainTool === 'lower' ? -1 : 1;
             terrain.heights[index] += direction * brushStrength / 100 * 7 * falloff;
@@ -1011,7 +1022,7 @@ export function EditorApp() {
       });
       pinTerrainEdgeHeights(heights, canvas.width, canvas.height);
       bitmap.close();
-      mutate((draft) => { draft.terrain.heights = heights; });
+      mutate((draft) => { draft.terrain.heights = heights; }, true, 'terrain');
       setMode('terrain');
       setTerrainTool('sculpt');
       closeHeightmapDialog();
@@ -1036,6 +1047,7 @@ export function EditorApp() {
       let tagmap2Text: string | undefined;
       let jsonValue: unknown;
       let sourceProject: WulframProject | undefined;
+      let startScriptText: string | undefined;
       const sourceFiles: Partial<MapSourceFiles> = {};
       let importedName: string | undefined;
 
@@ -1047,6 +1059,7 @@ export function EditorApp() {
         else if (base === 'state' || /^state\d*$/.test(base) || base === 'db_state' || base === 'bigstate' || base.endsWith('.state')) stateTexts.push({ name: base, text });
         else if (base === 'tagmap2' || base.endsWith('.tagmap2')) tagmap2Text = text;
         else if (base === 'tagmap' || base.endsWith('.tagmap')) tagmapText = text;
+        else if (base === 'start_script') startScriptText = text;
         else if (base.endsWith('.json')) jsonValue = JSON.parse(text);
         else if (/^\d+x\d+\s*[\r\n]+[\d.]+x[\d.]+/i.test(text.trim())) landText = text;
       };
@@ -1065,7 +1078,7 @@ export function EditorApp() {
           }
         } else {
           await consume(file.name, await file.text());
-          if (!importedName && !['land', 'state', 'tagmap', 'tagmap2'].includes(file.name.toLowerCase())) {
+          if (!importedName && !['land', 'state', 'tagmap', 'tagmap2', 'start_script'].includes(file.name.toLowerCase())) {
             importedName = file.name.replace(/\.[^.]+$/, '');
           }
         }
@@ -1115,6 +1128,7 @@ export function EditorApp() {
           if (tagmapText) draft.terrain.tagmap = parseLines(tagmapText);
           if (tagmap2Text) draft.terrain.tagmap2 = parseLines(tagmap2Text);
         }
+        if (startScriptText !== undefined) draft.terrain.skyName = skyboxFromStartScript(startScriptText);
         if (importedCollection) {
           draft.baseLayouts = importedCollection.layouts;
           draft.activeBaseLayoutId = importedCollection.activeLayoutId;
@@ -1311,14 +1325,6 @@ export function EditorApp() {
     const name = window.prompt('Map name', 'Untitled map')?.trim();
     if (name === undefined) return;
     const blank = createBlankProject(name || 'Untitled map');
-    if (manifest && !manifest.terrainTextures[blank.terrain.tagmap2[0]]) {
-      const first = Object.keys(manifest.terrainTextures)[0];
-      if (first) {
-        blank.terrain.tagmap = [`0:${first}`];
-        blank.terrain.tagmap2 = [first];
-        setSelectedTexture(first);
-      }
-    }
     if (project) pushHistory(cloneProject(project));
     setProject(blank);
     setRepositorySlug('');
@@ -1327,8 +1333,8 @@ export function EditorApp() {
     setSelectedEntityId(undefined);
     setMode('terrain');
     markDirty('both');
-    setNotice({ tone: 'ready', text: 'Blank 129 × 129 map created' });
-  }, [dirty, manifest, markDirty, project, pushHistory]);
+    setNotice({ tone: 'ready', text: 'Blank 129 × 129 map created with the backface checkerboard' });
+  }, [dirty, markDirty, project, pushHistory]);
 
   if (!manifest || !baseTemplates || !project) {
     return (
@@ -1471,7 +1477,7 @@ export function EditorApp() {
           <DialogHeader>
             <DialogTitle>Import grayscale heightmap</DialogTitle>
             <DialogDescription>
-              Black maps to the minimum height and white maps to the maximum. Use smoothing to soften isolated image spikes before changing the terrain. The outer terrain ring stays pinned at zero.
+              Black maps to the minimum height and white maps to the maximum. Set a negative midpoint to lower the terrain below ground without changing its elevation range. The outer terrain ring stays at zero.
             </DialogDescription>
           </DialogHeader>
           <div className="heightmap-preview">
@@ -1482,6 +1488,7 @@ export function EditorApp() {
             <NumberField label="Minimum (black)" max={5000} min={-5000} onChange={(value) => setHeightmapRange(([_, maximum]) => [value, maximum])} value={heightmapRange[0]} />
             <NumberField label="Maximum (white)" max={5000} min={-5000} onChange={(value) => setHeightmapRange(([minimum]) => [minimum, value])} value={heightmapRange[1]} />
           </div>
+          <NumberField label="Midpoint height (50% gray)" onChange={(value) => setHeightmapRange((range) => recenterHeightmapRange(range, heightmapGamma, value))} value={heightmapMidpointHeight(heightmapRange, heightmapGamma)} />
           <div className="heightmap-curves">
             <RangeField label="Spike smoothing" max={6} min={0} onChange={setHeightmapSmoothing} step={1} suffix=" passes" value={heightmapSmoothing} />
             <RangeField label="Midtone curve" max={2.5} min={0.35} onChange={setHeightmapGamma} step={0.05} suffix="×" value={heightmapGamma} />
@@ -1490,6 +1497,7 @@ export function EditorApp() {
             <button onClick={() => { setHeightmapRange([0, 120]); setHeightmapSmoothing(3); setHeightmapGamma(1); }} type="button">Gentle 0–120</button>
             <button onClick={() => { setHeightmapRange([0, 240]); setHeightmapSmoothing(2); setHeightmapGamma(1); }} type="button">Medium 0–240</button>
             <button onClick={() => { setHeightmapRange([0, 420]); setHeightmapSmoothing(0); setHeightmapGamma(1); }} type="button">Raw 0–420</button>
+            <button onClick={() => { setHeightmapRange([-420, 0]); setHeightmapSmoothing(2); setHeightmapGamma(1); }} type="button">Below ground −420–0</button>
           </div>
           <p className="heightmap-note">Image resizing uses exact nearest-pixel sampling. Smoothing is an explicit terrain-height pass and can be set to zero.</p>
           <DialogFooter>
@@ -1552,6 +1560,19 @@ export function EditorApp() {
                 <button className="heightmap-action" onClick={() => heightmapRef.current?.click()} type="button">
                   <ImageIcon /><span><strong>Import grayscale</strong><small>Create terrain from a heightmap</small></span>
                 </button>
+              </section>
+              <section className="panel-section">
+                <label className="section-label" htmlFor="terrain-skybox">SKYBOX</label>
+                <select
+                  className="template-select"
+                  id="terrain-skybox"
+                  onChange={(event) => mutate((draft) => { draft.terrain.skyName = resolveSkyboxName(event.target.value); }, true, 'terrain')}
+                  value={resolveSkyboxName(project.terrain.skyName)}
+                >
+                  {Object.entries(manifest.skyboxes ?? {}).map(([name, asset]) => (
+                    <option key={name} value={name}>{asset.label}</option>
+                  ))}
+                </select>
               </section>
               <section className="panel-section texture-library">
                 <div className="section-heading"><p className="section-label">ORIGINAL TEXTURES</p><span>{textureNames.length}</span></div>
@@ -1768,7 +1789,6 @@ export function EditorApp() {
             serviceRadius={project.validation.serviceRadius}
             showGrid={showGrid}
             terrain={project.terrain}
-            textureBlend={textureBlend}
             terrainTool={terrainTool}
             transformMode={modelTransformMode}
           />
@@ -1791,7 +1811,6 @@ export function EditorApp() {
               <section className="inspector-block">
                 <RangeField label="Radius / half-size" max={600} min={25} onChange={setBrushRadius} step={5} suffix=" u" value={brushRadius} />
                 <RangeField label="Strength" max={100} min={1} onChange={setBrushStrength} suffix="%" value={brushStrength} />
-                <RangeField label="Texture blend" max={100} min={0} onChange={setTextureBlend} suffix="%" value={textureBlend} />
                 <fieldset className="brush-option-group">
                   <legend>FOOTPRINT</legend>
                   <div className="brush-option-buttons">
@@ -1848,8 +1867,9 @@ export function EditorApp() {
                   <NumberField label="Max / white" onChange={(value) => setHeightmapRange(([minimum]) => [minimum, value])} value={heightmapRange[1]} />
                 </div>
                 <div className="heightmap-inline-controls">
+                  <NumberField label="Midpoint height (50% gray)" onChange={(value) => setHeightmapRange((range) => recenterHeightmapRange(range, heightmapGamma, value))} value={heightmapMidpointHeight(heightmapRange, heightmapGamma)} />
                   <RangeField label="Smoothing" max={6} min={0} onChange={setHeightmapSmoothing} step={1} value={heightmapSmoothing} />
-                  <RangeField label="Midtone" max={2.5} min={0.35} onChange={setHeightmapGamma} step={0.05} suffix="×" value={heightmapGamma} />
+                  <RangeField label="Midtone curve" max={2.5} min={0.35} onChange={setHeightmapGamma} step={0.05} suffix="×" value={heightmapGamma} />
                 </div>
                 <button className="secondary-action" onClick={() => heightmapRef.current?.click()} type="button"><ImageIcon /> Choose heightmap</button>
               </section>

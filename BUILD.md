@@ -42,16 +42,16 @@ npm run dev
 ## Self-contained Windows release build
 
 ```powershell
-npm run build:desktop -- --version 0.5.1
+npm run build:desktop -- --version 0.6.0
 ```
 
-The archive is written to `dist/desktop/WulframForge-0.5.1-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
+The archive is written to `dist/desktop/WulframForge-0.6.0-win-x64-self-contained.zip`. It contains the editor, original converted assets, and the .NET runtime. The installed Edge WebView2 Evergreen Runtime is the only external runtime dependency.
 
 To include an official fixed WebView2 runtime for an offline package:
 
 ```powershell
 $env:WEBVIEW2_FIXED_RUNTIME_DIR = 'C:\path\to\fixed-webview2-runtime'
-npm run build:desktop -- --version 0.5.1
+npm run build:desktop -- --version 0.6.0
 ```
 
 ## Research/debug desktop build
@@ -104,4 +104,4 @@ npm run maps:compile -- --all
 npm run maps:release -- v1.0.0
 ```
 
-Editor releases are created by pushing a reviewed `v*` tag on `main`; `.github/workflows/release.yml` reruns tests, builds the Windows archive, writes SHA-256 checksums, and attaches both to the GitHub Release.
+Editor releases are created by pushing a `v*` tag on `main` after its release PR passes validation. Either repository administrator may merge and release without a second admin's approval; contributor PRs still require admin review. `.github/workflows/release.yml` reruns tests, builds the Windows archive, writes SHA-256 checksums, and attaches both to the GitHub Release.

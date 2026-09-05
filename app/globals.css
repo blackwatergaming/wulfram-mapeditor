@@ -258,7 +258,7 @@
 .heightmap-control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .heightmap-curves { padding: 11px 11px 0; border: 1px solid #343a3f; border-radius: 4px; background: #111416; }
 .heightmap-curves .range-field { margin-bottom: 13px; }
-.heightmap-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.heightmap-presets { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
 .heightmap-presets button { height: 28px; border: 1px solid #3b4247; border-radius: 3px; color: #aaaeb1; background: #202428; font-size: 8px; }
 .heightmap-presets button:hover { border-color: #8c5d3e; color: #eda16b; }
 .heightmap-note { color: #747d83; font-size: 9px; line-height: 1.5; }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { heightsFromGrayscaleRgba } from '../lib/heightmap.ts';
+import { heightmapMidpointHeight, heightsFromGrayscaleRgba, recenterHeightmapRange } from '../lib/heightmap.ts';
 import { pinTerrainEdgeHeights } from '../lib/terrain-edge.ts';
 
 void test('grayscale controls map black and white to explicit minimum and maximum heights', () => {
@@ -54,4 +54,28 @@ void test('terrain edges stay pinned at zero without changing interior heights',
   const thinTerrain = [4, 3, 2, 1];
   pinTerrainEdgeHeights(thinTerrain, 1, 4);
   assert.deepEqual(thinTerrain, [0, 0, 0, 0]);
+});
+
+void test('negative midpoint shifts a tall import below ground without flattening its relief', () => {
+  const pixels = [0, 64, 127.5, 192, 255].flatMap((gray) => [gray, gray, gray, 255]);
+  for (const gamma of [0.5, 1, 2]) {
+    const range = recenterHeightmapRange([0, 1800], gamma, -600);
+    assert.equal(range[1] - range[0], 1800);
+    assert.ok(Math.abs(heightmapMidpointHeight(range, gamma) + 600) < 1e-9);
+    const original = heightsFromGrayscaleRgba(pixels, 5, 1, { minimum: 0, maximum: 1800, gamma, smoothingPasses: 0 });
+    const shifted = heightsFromGrayscaleRgba(pixels, 5, 1, { minimum: range[0], maximum: range[1], gamma, smoothingPasses: 0 });
+    assert.ok(Math.abs(shifted[2] + 600) < 1e-9);
+    for (let index = 1; index < shifted.length; index += 1) {
+      assert.ok(Math.abs((shifted[index] - shifted[index - 1]) - (original[index] - original[index - 1])) < 1e-9);
+    }
+  }
+});
+
+void test('below-ground import and smoothing keep every interior height at or below the zero boundary', () => {
+  const pixels = Array.from({ length: 49 }, (_, index) => [index * 5, index * 5, index * 5, 255]).flat();
+  const heights = heightsFromGrayscaleRgba(pixels, 7, 7, { minimum: -420, maximum: 0, gamma: 1, smoothingPasses: 2 });
+  pinTerrainEdgeHeights(heights, 7, 7);
+  assert.ok(heights.every((height) => height >= -420 && height <= 0));
+  assert.ok(heights[24] < 0);
+  assert.equal(heights[0], 0);
 });

@@ -122,6 +122,7 @@ void test('repository source save, list, load, compile, and release bundle form 
       'state',
       'tagmap',
       'tagmap2',
+      'start_script',
       'base-layout.json',
       'base-layouts.json',
       'wulfram-project.json',
@@ -181,6 +182,7 @@ void test('base-only saves persist multiple named layouts and never rewrite terr
   const changed = loadRepositoryMap(repository, 'git-diff-test');
   changed.name = 'This map-name change must stay unsaved';
   changed.terrain.heights[4] = 999;
+  changed.terrain.skyName = 'sunset';
   changed.terrain.textureIds[4] = 17;
   changed.terrain.tagmap2.push('must-not-save');
   changed.baseLayouts[0].name = 'Competitive';
@@ -218,6 +220,7 @@ void test('base-only saves persist multiple named layouts and never rewrite terr
   const loaded = loadRepositoryMap(repository, 'git-diff-test');
   assert.equal(loaded.name, 'Git Diff Test');
   assert.equal(loaded.terrain.heights[4], 12.345678);
+  assert.equal(loaded.terrain.skyName, undefined);
   assert.equal(loaded.baseLayouts.length, 2);
   assert.equal(loaded.activeBaseLayoutId, 'night-raid');
   assert.equal(loaded.baseLayouts[0].name, 'Competitive');
@@ -239,6 +242,7 @@ void test('terrain-only saves preserve every existing base-state byte', (context
   ]));
   const changed = loadRepositoryMap(repository, 'git-diff-test');
   changed.terrain.heights[0] = 88;
+  changed.terrain.skyName = 'aurora';
   changed.entities = [];
   changed.baseLayouts[0].name = 'Must not save';
   const saved = saveRepositoryMap(repository, 'git-diff-test', changed, { scope: 'terrain' });
@@ -252,6 +256,7 @@ void test('terrain-only saves preserve every existing base-state byte', (context
   }
   const loaded = loadRepositoryMap(repository, 'git-diff-test');
   assert.equal(loaded.terrain.heights[0], 88);
+  assert.equal(loaded.terrain.skyName, 'aurora');
   assert.equal(loaded.baseLayouts[0].name, 'Default');
   assert.deepEqual(loaded.entities.map((entity) => entity.id), ['power-1']);
 });

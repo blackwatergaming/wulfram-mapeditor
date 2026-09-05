@@ -5,6 +5,23 @@ export interface HeightmapControls {
   smoothingPasses: number;
 }
 
+function normalizedGamma(gamma: number): number {
+  return Number.isFinite(gamma) ? Math.max(0.1, Math.min(4, gamma)) : 1;
+}
+
+export function heightmapMidpointHeight(range: readonly [number, number], gamma: number): number {
+  return range[0] + Math.pow(0.5, normalizedGamma(gamma)) * (range[1] - range[0]);
+}
+
+/** Shift the entire height range so 50% gray lands at the requested world height. */
+export function recenterHeightmapRange(
+  range: readonly [number, number], gamma: number, midpoint: number,
+): [number, number] {
+  if (!Number.isFinite(midpoint)) return [range[0], range[1]];
+  const offset = midpoint - heightmapMidpointHeight(range, gamma);
+  return [range[0] + offset, range[1] + offset];
+}
+
 function smoothHeights(source: number[], width: number, height: number): number[] {
   const output = Array.from({ length: source.length }, () => 0);
   const weights = [1, 2, 1];
@@ -36,7 +53,7 @@ export function heightsFromGrayscaleRgba(
   if (pixels.length < width * height * 4) throw new Error('Heightmap pixel data is incomplete.');
   const minimum = Number.isFinite(controls.minimum) ? controls.minimum : 0;
   const maximum = Number.isFinite(controls.maximum) ? controls.maximum : minimum;
-  const gamma = Number.isFinite(controls.gamma) ? Math.max(0.1, Math.min(4, controls.gamma)) : 1;
+  const gamma = normalizedGamma(controls.gamma);
   const smoothingPasses = Number.isFinite(controls.smoothingPasses)
     ? Math.max(0, Math.min(8, Math.trunc(controls.smoothingPasses)))
     : 0;

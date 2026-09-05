@@ -1,8 +1,9 @@
 # Contributing to Wulfram Forge
 
 Editor contributions use GitHub's fork-and-pull-request workflow. The `main`
-branch is the source for desktop releases and accepts changes only through
-reviewed pull requests.
+branch is the source for desktop releases. Contributor changes enter through
+reviewed pull requests; a repository administrator may complete a release PR
+without requiring another administrator's approval once validation passes.
 
 ## One-time setup
 
@@ -65,14 +66,18 @@ git push -u origin HEAD
 gh pr create --repo blackwatergaming/wulfram-mapeditor --base main --head YOUR_GITHUB_USERNAME:editor/example-change --fill
 ```
 
-Every pull request must pass validation, resolve all review conversations, and
-receive approval from a repository administrator. New commits invalidate prior
-approvals, and the person who made the latest change cannot provide the final
-approval.
+Every pull request must pass validation and resolve all review conversations.
+Contributor pull requests also require approval from a repository administrator;
+new commits invalidate prior approvals, and the person who made the latest
+change cannot provide that approval. The repository administrators `cyberbalsa`
+and `0xLogic` have a review exception so either can complete their own release
+PR. Required CI checks, administrator enforcement, and force-push/deletion
+restrictions remain enabled.
 
 ## Releases
 
-Only administrators create `v*` tags. The release workflow accepts a tag only
-when its commit belongs to the reviewed `main` history, reruns verification,
+Only administrators create `v*` tags. One administrator can merge a validated
+release PR and publish its tag; a second administrator is not required. The
+release workflow accepts a tag only when its commit belongs to `main`, reruns verification,
 builds the Windows desktop archive, and publishes checksums with the GitHub
 Release. Contributors should not create release tags in the upstream repository.
