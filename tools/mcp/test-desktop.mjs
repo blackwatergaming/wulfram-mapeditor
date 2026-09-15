@@ -1,0 +1,57 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import net from 'node:net';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {readMapArchive} from '../../lib/map-package.ts';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const out=await fs.mkdtemp(path.join(root,'outputs','mcp-native-test-'));
+const sessionDir=path.join(out,'sessions'),profile=path.join(out,'profile');
+const exe=path.join(root,'dist/desktop/mcp-v0.1.0/WulframForge.exe');
+const fixture=path.join(root,'outputs/three-lane-citadel-v1-final/Three-Lane-Citadel-v1.zip');
+const original=JSON.parse(await fs.readFile(path.join(root,'outputs/three-lane-citadel-v1-final/project.json'),'utf8'));
+const report={passed:false,steps:[],out};
+const probe=async(fn,label)=>{const until=Date.now()+45000;while(Date.now()<until){try{const r=await fn();if(r)return r;}catch{}await new Promise(r=>setTimeout(r,200));}throw new Error(`Timeout: ${label}`);};
+const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
+let app,socket,client;const pending=new Map();let sequence=0;
+try{
+  app=spawn(exe,[],{windowsHide:true,stdio:'ignore',env:{...process.env,WULFRAM_FORGE_MCP:'1',WULFRAM_MCP_SESSION_DIR:sessionDir,WULFRAM_FORGE_USER_DATA_DIR:profile,WULFRAM_FORGE_REMOTE_DEBUGGING_PORT:String(port)}});
+  app.on('error',e=>console.error(e));
+  const target=await probe(async()=>{const targets=await fetch(`http://127.0.0.1:${port}/json`).then(r=>r.json());return targets.find(t=>t.url==='https://wulfram-forge.local/index.html');},'native editor');
+  socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
+  socket.onmessage=e=>{const m=JSON.parse(e.data);if(pending.has(m.id)){const {resolve,reject,timer}=pending.get(m.id);clearTimeout(timer);pending.delete(m.id);m.error?reject(new Error(m.error.message)):resolve(m.result);}};
+  const send=(method,params={})=>new Promise((resolve,reject)=>{const id=++sequence;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP timeout'));},15000);pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}));});
+  const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.text);return r.result.value;};
+  await probe(()=>evaluate('!!window.wulframMcp && !!document.querySelector(\'input[type="file"][multiple]\')'),'MCP editor bridge');
+  // Only fixture import uses CDP. Every map inspection/edit/export below uses real MCP stdio + native pipe.
+  const {root:document}=await send('DOM.getDocument');const {nodeId}=await send('DOM.querySelector',{nodeId:document.nodeId,selector:'input[type="file"][multiple]'});
+  await send('DOM.setFileInputFiles',{nodeId,files:[fixture]});
+  const transport=new StdioClientTransport({command:process.execPath,args:['--experimental-strip-types',path.join(root,'tools/mcp/server.mjs')],env:{...process.env,WULFRAM_MCP_SESSION_DIR:sessionDir},stderr:'pipe'});
+  client=new Client({name:'forge-native-acceptance',version:'1'});await client.connect(transport);
+  const callRaw=(name,args={})=>client.callTool({name,arguments:args});
+  const call=async(name,args={})=>{const r=await callRaw(name,args);if(r.isError)throw new Error(r.content[0].text);return JSON.parse(r.content[0].text);};
+  const session=await probe(async()=>{const r=await call('list_editor_sessions');return r.sessions.find(s=>s.ready&&s.name==='Three Lane Citadel');},'imported fixture via MCP');
+  const sessionId=session.sessionId;
+  let state=await call('inspect_map',{sessionId});assert.deepEqual(state.entities,original.entities);report.steps.push('Real MCP discovery and native imported-map inspection');
+  const e=state.entities.find(e=>e.id==='team-1-base-tower-upper'),oldRevision=state.revision;
+  const moved=await call('edit_entities',{sessionId,expectedRevision:state.revision,edits:[{operation:'move',id:e.id,x:e.position[0]+10,mirror:true}]});
+  assert.notEqual(moved.revision,oldRevision);assert.equal(moved.undoCount,state.undoCount+1);assert.equal(moved.dirty,true);
+  state=await call('inspect_map',{sessionId});assert.equal(state.entities.find(e=>e.id==='team-1-base-tower-upper').position[0],1560);assert.equal(state.entities.find(e=>e.id==='team-2-base-tower-upper').position[0],11240);report.steps.push('Mirrored tower move acknowledged after React commit, one undo step');
+  const stale=await callRaw('undo',{sessionId,expectedRevision:oldRevision});assert.equal(stale.isError,true);assert.match(stale.content[0].text,/Stale/);report.steps.push('Stale revision rejected without change');
+  const shot=await callRaw('capture_view',{sessionId});assert.equal(shot.content[0].type,'image');await fs.writeFile(path.join(out,'moved-editor.png'),Buffer.from(shot.content[0].data,'base64'));report.steps.push('Native PNG screenshot through MCP');
+  await call('undo',{sessionId,expectedRevision:state.revision});state=await call('inspect_map',{sessionId});assert.deepEqual(state.entities,original.entities);assert.notEqual(state.revision,oldRevision);report.steps.push('One-step undo restored both towers; old revision remains stale');
+  const invalid=await callRaw('edit_entities',{sessionId,expectedRevision:state.revision,edits:[{operation:'move',id:e.id,x:6400}]});assert.equal(invalid.isError,true);assert.match(invalid.content[0].text,/validation/);assert.equal((await call('get_editor_state',{sessionId})).revision,state.revision);report.steps.push('Invalid power placement rejected atomically');
+  const terrain=await call('edit_terrain',{sessionId,expectedRevision:state.revision,brush:{operation:'raise',x:6400,y:1200,radius:120,value:5,mirror:true}});assert.ok(terrain.vertices>0);
+  await call('undo',{sessionId,expectedRevision:terrain.revision});state=await call('get_editor_state',{sessionId});report.steps.push('Mirrored terrain brush and undo');
+  const name=`native-test-${Date.now()}`;
+  const saved=await call('save_copy',{sessionId,expectedRevision:state.revision,name});const snapshot=JSON.parse(await fs.readFile(saved.path,'utf8'));assert.deepEqual(snapshot.terrain,original.terrain);assert.deepEqual(snapshot.entities,original.entities);
+  const archive=await call('export_map',{sessionId,expectedRevision:state.revision,name});const entries=await readMapArchive(await fs.readFile(archive.path));const reopened=JSON.parse(entries.find(e=>e.name.endsWith('/wulfram-project.json')).text);assert.deepEqual(reopened.terrain,original.terrain);assert.deepEqual(reopened.entities,original.entities);report.steps.push('Snapshot and ZIP roundtrip match restored live map');
+  const collision=await callRaw('save_copy',{sessionId,expectedRevision:state.revision,name});assert.equal(collision.isError,true);assert.match(collision.content[0].text,/EEXIST/);report.steps.push('Existing export cannot be overwritten');
+  const validation=await call('validate_map',{sessionId});assert.equal(validation.issues.filter(i=>i.severity==='error').length,0);
+  const finalShot=await callRaw('capture_view',{sessionId});await fs.writeFile(path.join(out,'restored-editor.png'),Buffer.from(finalShot.content[0].data,'base64'));
+  report.steps.push('Restored map validates with zero errors');report.passed=true;
+}catch(e){report.error=e.stack;process.exitCode=1;}
+finally{if(client)await client.close();if(socket)socket.close();if(app)app.kill();await fs.writeFile(path.join(out,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}

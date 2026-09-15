@@ -1,0 +1,19 @@
+# Installed dependencies
+node_modules/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.pfx
+*.p12
+
+# Generated output, logs and editor sessions
+outputs/
+dist/
+coverage/
+*.log
+mcp-sessions/
+*.tsbuildinfo

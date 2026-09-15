@@ -1,0 +1,8 @@
+{
+  "name": "wulfram-forge-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node --experimental-strip-types server.mjs", "test": "node --experimental-strip-types --test ../../tests/mcp.test.mjs" },
+  "dependencies": { "@modelcontextprotocol/sdk": "1.30.0", "zod": "4.5.4" }
+}
