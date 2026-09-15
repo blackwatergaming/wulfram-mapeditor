@@ -12,11 +12,11 @@ export async function requestEditor(id,command,timeout=30000) {
   const s=await readSession(id);
   return new Promise((resolve,reject)=>{
     const socket=net.connect(`\\\\.\\pipe\\${s.pipeName}`);let data='',done=false;
-    const finish=(error,value)=>{if(done)return;done=true;clearTimeout(timer);socket.destroy();error?reject(error):resolve(value);};
+    const finish=(error,value)=>{if(done)return;done=true;clearTimeout(timer);socket.destroy();if(error)reject(error);else resolve(value);};
     const timer=setTimeout(()=>finish(new Error('Editor request timed out. Re-inspect state before retrying a write.')),timeout);
     socket.setEncoding('utf8');socket.on('error',e=>finish(e));
     socket.on('connect',()=>socket.write(JSON.stringify({token:s.token,command})+'\n'));
-    socket.on('data',chunk=>{data+=chunk;if(data.length>64*1024*1024){finish(new Error('Editor response exceeds limit.'));return;}if(data.includes('\n'))try{const r=JSON.parse(data.slice(0,data.indexOf('\n')));r.ok?finish(null,r.result):finish(new Error(r.error));}catch(e){finish(e);}});
+    socket.on('data',chunk=>{data+=chunk;if(data.length>64*1024*1024){finish(new Error('Editor response exceeds limit.'));return;}if(data.includes('\n'))try{const r=JSON.parse(data.slice(0,data.indexOf('\n')));if(r.ok)finish(null,r.result);else finish(new Error(r.error));}catch(e){finish(e);}});
     socket.on('end',()=>{if(!done)finish(new Error('Editor disconnected before acknowledging the request.'));});
   });
 }
